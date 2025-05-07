@@ -1,0 +1,6 @@
+.envrc
+venv/*
+settings.json
+docs/Engineering_Coding_Test.pdf
+*.log
+*.pyc
