@@ -1,5 +1,7 @@
 # Mr. Crawly - Basic Web Crawler
-A somewhat-time-limited web-crawler exersize
+<img src="docs/MrCrawly.png" width="400">
+
+A somewhat-time-limited web-crawler exercise
 A polite and efficient web crawler that respects robots.txt rules and implements rate limiting.
 
 ## Features
@@ -65,4 +67,4 @@ The crawler is designed to be polite to servers by:
 ## Dependencies
 
 - requests>=2.31.0
-- beautifulsoup4>=4.12.0 
+- beautifulsoup4>=4.12.0

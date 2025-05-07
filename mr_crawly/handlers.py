@@ -19,7 +19,7 @@ class ConsoleHandler(logging.StreamHandler):
         level: int | str = logging.NOTSET,
     ):
         """
-        Allows for logging to the console with rich formatting.
+        Facilitates logging to the console with rich formatting.
         Args:
             stream (Optional[IO[str]]): A file-like object to write to. Defaults to sys.stderr.
             highlighter (Highlighter, optional): A highlighter to use for syntax
