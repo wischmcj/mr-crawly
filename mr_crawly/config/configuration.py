@@ -9,17 +9,14 @@ import toml
 import yaml
 
 cwd = os.getcwd()
-# Read in environment variables, set defaults if not present
 loc = os.path.dirname(os.path.dirname(__file__))
 print(loc)
-# print(f"Current working directory: {cwd}")
-# print(f"{sys.path=}")
 sys.path.append(loc)
 # sys.path.append(os.path.dirname(cwd))
 #
 
-config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config.toml")
-log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/logging_config.yml")
+config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config/config.toml")
+log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/config/logging_config.yml")
 
 
 def _load_console_log():
