@@ -11,7 +11,7 @@ formatters:
 handlers:
     console:
         level: INFO
-        class: mr_crawly.handlers.ConsoleHandler
+        class: config.handlers.ConsoleHandler
         formatter: default
         styles:
             log.web_url: bright_blue
@@ -21,7 +21,6 @@ handlers:
             log.warning_level: yellow3
             log.error_level: red3
             log.critical_level: bright_red
-
 
 loggers:
 
