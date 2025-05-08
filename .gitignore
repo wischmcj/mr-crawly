@@ -6,3 +6,4 @@ docs/Engineering_Coding_Test.pdf
 *.pyc
 google_sitemap.json
 mr_crawly/events.py
+data/sqlite.db
