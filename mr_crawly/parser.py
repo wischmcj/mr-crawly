@@ -3,20 +3,34 @@ from __future__ import annotations
 import time
 from urllib.parse import urljoin, urlparse
 
+import redis
 import requests
 from bs4 import BeautifulSoup
 from config.configuration import get_logger
+from rq import Queue
 
 
 class Parser:
-    def __init__(self, manager, seed_url: str, max_pages: int = 10, delay: float = 1.0):
-        self.manager = manager
+    def __init__(
+        self,
+        manager,
+        seed_url: str,
+        max_pages: int = 10,
+        delay: float = 1.0,
+        host: str = "localhost",
+        port: int = 7777,
+    ):
         self.seed_url = seed_url
         self.max_pages = max_pages
         self.delay = delay
         self.visited_urls = set()
         self.to_visit = [seed_url]
         self.logger = get_logger("crawler")
+        self.host = host
+        self.port = port
+        self.redis_conn = redis.Redis(
+            host=self.host, port=self.port, decode_responses=True
+        )
 
     def request_page(self, url: str) -> tuple[str, int]:
         """Request page HTML from manager"""
@@ -93,3 +107,22 @@ class Parser:
 
             # Respect rate limiting
             time.sleep(self.delay)
+
+
+def extract_urls(url: str):
+    """Extract URLs from a webpage"""
+    parser = Parser()
+    new_frontier_links = [url]
+    all_visited_urls = []
+    r = parser.redis_conn
+    while len(new_frontier_links) > 0:
+        new_frontier_links = parser.crawl()
+        for url in new_frontier_links:
+            parse_queue = Queue(connection=r, name="fronteir")
+            _ = parse_queue.enqueue(url, args=[url])
+        all_visited_urls.extend(parser.visited_urls)
+    return all_visited_urls
+
+
+if __name__ == "__main__":
+    extract_urls("https://www.google.com")

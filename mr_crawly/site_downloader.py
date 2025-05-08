@@ -4,13 +4,21 @@ from collections import defaultdict
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
+import redis
 import requests
 from config.configuration import get_logger
+from rq import Queue
 
 
 class SiteDownloader:
     def __init__(
-        self, seed_url: str, max_pages: int = 10, delay: float = 1.0, parse=True
+        self,
+        seed_url: str,
+        max_pages: int = 10,
+        delay: float = 1.0,
+        parse=True,
+        host="localhost",
+        port=7777,
     ):
         self.seed_url = seed_url
         self.max_pages = max_pages
@@ -21,6 +29,8 @@ class SiteDownloader:
         self.robot_parser = RobotFileParser()
         self.logger = get_logger("crawler")
         self.parse = parse
+        self.host = host
+        self.port = port
         self.results = dict.fromkeys(
             [
                 "seed_url",
@@ -37,6 +47,11 @@ class SiteDownloader:
         )
         self.sitemap_details = []
         self.sitemap_indexes = defaultdict(list)
+        self.host = host
+        self.port = port
+        self.redis_conn = redis.Redis(
+            host=self.host, port=self.port, decode_responses=True
+        )
 
     def save_html(self, html: str, filename: str):
         with open(filename, "w", encoding="UTF-8") as f:
@@ -50,7 +65,10 @@ class SiteDownloader:
         try:
             self.robot_parser.set_url(robots_url)
             self.robot_parser.read()
-            return self.robot_parser.can_fetch("*", url)
+            return (
+                self.robot_parser.can_fetch("*", url)
+                or url in self.robot_parser.site_maps()
+            )
         except Exception as e:
             self.logger.warning(f"Error checking robots.txt for {url}: {e}")
             return True  # If we can't check robots.txt, we probably want to set a reasonable default
@@ -68,5 +86,15 @@ class SiteDownloader:
         except Exception as e:
             self.logger.error(f"Error fetching {url}: {e}")
             return None, response.status_code
-
+        self.redis_conn.set(url, response.text)
         return response, response.status_code
+
+
+def download_page(url: str):
+    """Get the page from a webpage"""
+    downloader = SiteDownloader(url)
+    results = downloader.get_page_elements(url)
+    r = downloader.redis_conn
+    site_map_queue = Queue(connection=r, name="site_map")
+    job = site_map_queue.enqueue(url, args=[url])
+    return results, job
