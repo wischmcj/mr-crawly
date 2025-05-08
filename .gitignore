@@ -5,3 +5,4 @@ docs/Engineering_Coding_Test.pdf
 *.log
 *.pyc
 google_sitemap.json
+mr_crawly/events.py
