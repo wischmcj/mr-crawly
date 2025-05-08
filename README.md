@@ -12,13 +12,24 @@ A polite and efficient web crawler that respects robots.txt rules and implements
 - Includes proper error handling and logging
 - Command-line interface with configurable parameters
 
+## Prerequisites
+
 ## Installation
 
 1. Clone this repository
-2. Install the required dependencies:
+2. Install the required python dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+3. Install the redis-server cli
+   - [Windows Install Instructions](https://redis.io/docs/latest/operate/oss_and_stack/install/archive/install-redis/install-redis-on-windows/)
+   - [Linux]
+```
+    sudo apt install
+```
+4. Set the values of key configuration variables
+    - export MRCRAWLY_LOG_CONFIG="/media/penguaman/code/code/ActualCode/mr-crawly/mr_crawly/config/logging_config.yml"
+
 
 ## Usage
 

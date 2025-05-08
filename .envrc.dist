@@ -2,4 +2,4 @@ export RUN_ENVIRONMENT=local
 export PYTHONPATH=$PYTHONPATH
 
 export MRCRAWLY_CONFIG=""
-export MRCRAWLY_LOG_CONFIG="/code/code/canopyHydrodynamics/logging_config.yml"
+export MRCRAWLY_LOG_CONFIG="/code/code/mr-crawly/mr_crawly/logging_config.yml"
