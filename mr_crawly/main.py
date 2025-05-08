@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from datetime import datetime
 from logging import Manager
 
@@ -29,9 +30,8 @@ def main():
     formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print("Formatted datetime:", formatted_datetime)
 
-    manager = Manager(
-        seed_url=args.url, max_pages=args.max_pages, delay=args.delay, parse=args.parse
-    )
+    manager = Manager(seed_url=args.url, max_pages=args.max_pages, parse=args.parse)
+    atexit.register(manager.shutdown)
     manager.get_to_work()
 
 
