@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from dataclasses import dataclass
 
@@ -13,11 +12,7 @@ class Run:
     seed_url: str
     start_time: str
     max_pages: int
-    delay: float
-    pages_crawled: int | None = None
     end_time: str | None = None
-    status: str = "running"
-    error: str | None = None
 
 
 class RunTable:
@@ -33,65 +28,38 @@ class RunTable:
                                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                                 seed_url TEXT NOT NULL,
                                 start_time TEXT NOT NULL,
-                                end_time TEXT NULL,
-                                pages_crawled INTEGER DEFAULT 0,
                                 max_pages INTEGER,
-                                delay REAL,
-                                status TEXT DEFAULT 'running',
-                                error TEXT NULL
+                                end_time TEXT NULL
                             );"""
         )
         self.connection.commit()
 
-    def start_run(self, seed_url, max_pages, delay):
+    def start_run(
+        self,
+        seed_url,
+        max_pages,
+    ):
         """Create a new run record when crawler starts"""
         self.cursor.execute(
-            """INSERT INTO runs (seed_url, start_time, max_pages, delay)
-                              VALUES (?, datetime('now'), ?, ?);""",
-            (seed_url, max_pages, delay),
+            """INSERT INTO runs (seed_url, start_time, max_pages)
+                              VALUES (?, datetime('now'), ?);""",
+            (seed_url, max_pages),
         )
         self.connection.commit()
         return self.cursor.lastrowid
-
-    def update_run(self, run_id, pages_crawled=None, status=None, error=None):
-        """Update run statistics during crawling"""
-        updates = []
-        params = []
-        if pages_crawled is not None:
-            updates.append("pages_crawled = ?")
-            params.append(pages_crawled)
-        if status is not None:
-            updates.append("status = ?")
-            params.append(status)
-        if error is not None:
-            updates.append("error = ?")
-            params.append(error)
-
-        if updates:
-            query = f"""UPDATE runs SET {', '.join(updates)}
-                       WHERE run_id = ?;"""
-            params.append(run_id)
-            self.cursor.execute(query, params)
-            self.connection.commit()
 
     def complete_run(self, run_id, status="completed"):
         """Mark a run as completed and set end time"""
         self.cursor.execute(
             """UPDATE runs SET
-                                status = ?,
-                                end_time = datetime('now')
-                              WHERE run_id = ?;""",
-            (status, run_id),
+                            end_time = datetime('now')
+                            WHERE run_id = ?;""",
+            (run_id),
         )
         self.connection.commit()
 
-    def get_run(self, run_id):
-        """Get details for a specific run"""
-        self.cursor.execute("SELECT * FROM runs WHERE run_id = ?;", (run_id,))
-        return self.cursor.fetchone()
 
-
-class UrlHTML:
+class UrlTable:
     def __init__(self, db_path: str):
         """Initialize URL/HTML storage"""
         self.db_path = db_path
@@ -105,8 +73,10 @@ class UrlHTML:
             CREATE TABLE IF NOT EXISTS url_html (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
-                html BLOB,
+                content BLOB,
+                req_status INTEGER,
                 run_id INTEGER,
+                links TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(url, run_id)
             )
@@ -149,29 +119,136 @@ class UrlHTML:
             cursor = self.conn.execute("SELECT 1 FROM url_html WHERE url = ?", (url,))
         return cursor.fetchone() is not None
 
-    def get_urls_for_run(self, run_id: int) -> list[str]:
-        """Get all URLs stored for a specific run"""
-        cursor = self.conn.execute(
-            "SELECT url FROM url_html WHERE run_id = ?", (run_id,)
+
+class LinksTable:
+    def __init__(self, db_path: str):
+        """Initialize URL/HTML storage"""
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.create_tables()
+
+    def create_tables(self):
+        """Create URL/HTML storage tables if they don't exist"""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS url_html (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                seed_url TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                linked_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(seed_url, source_url, linked_url)
+            )
+        """
         )
-        return [row[0] for row in cursor.fetchall()]
+        self.conn.commit()
 
-    def __del__(self):
+    def store_links(self, seed_url: str, source_url: str, linked_urls: list[str]):
+        """Store multiple links from a source URL"""
+        try:
+            # Create list of tuples for executemany
+            links_data = [
+                (seed_url, source_url, linked_url) for linked_url in linked_urls
+            ]
+
+            self.conn.executemany(
+                """INSERT INTO url_html (seed_url, source_url, linked_url)
+                   VALUES (?, ?, ?)""",
+                links_data,
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            # Log error but continue - some duplicates are expected
+            pass
+
+
+class SitemapTable:
+    def __init__(self, db_path: str):
+        """Initialize URL/HTML storage"""
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.create_table()
+
+    def create_table(self):
         """Close database connection on cleanup"""
-        self.conn.close()
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sitemap_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_url TEXT NOT NULL,
+                index_url TEXT,
+                loc TEXT,
+                priority REAL,
+                frequency TEXT,
+                modified TEXT,
+                status TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_url, index_url)
+            )
+        """
+        )
+        self.conn.commit()
 
+    def store_sitemap_data(self, sitemap_details: dict):
+        """Store sitemap metadata"""
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO sitemap_data
+                (source_url, index_url, loc, priority, frequency, modified, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sitemap_details["source_url"],
+                    sitemap_details["index"],
+                    sitemap_details["loc"],
+                    sitemap_details["priority"],
+                    sitemap_details["frequency"],
+                    sitemap_details["modified"],
+                    sitemap_details["status"],
+                ),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            # Update if entry already exists
+            self.conn.execute(
+                """
+                UPDATE sitemap_data
+                SET loc = ?, priority = ?, frequency = ?, modified = ?, status = ?
+                WHERE source_url = ? AND index_url = ?
+                """,
+                (
+                    sitemap_details["loc"],
+                    sitemap_details["priority"],
+                    sitemap_details["frequency"],
+                    sitemap_details["modified"],
+                    sitemap_details["status"],
+                    sitemap_details["source_url"],
+                    sitemap_details["index"],
+                ),
+            )
+            self.conn.commit()
 
-def initialize_db(db_path: str):
-    """Initialize database with all tables and return connected objects"""
-    # Ensure data directory exists
-    data_dir = os.path.dirname(db_path)
-    os.makedirs(data_dir, exist_ok=True)
-
-    # Get logger
-    logger = get_logger(__name__)
-
-    # Initialize tables
-    run_table = RunTable(db_path, logger)
-    url_store = UrlHTML(db_path)
-
-    return run_table, url_store
+    def get_sitemap_data(self, source_url: str, index_url: str = None) -> dict:
+        """Retrieve sitemap data"""
+        if index_url:
+            cursor = self.conn.execute(
+                "SELECT * FROM sitemap_data WHERE source_url = ? AND index_url = ?",
+                (source_url, index_url),
+            )
+        else:
+            cursor = self.conn.execute(
+                "SELECT * FROM sitemap_data WHERE source_url = ?", (source_url,)
+            )
+        result = cursor.fetchone()
+        if result:
+            return {
+                "source_url": result[1],
+                "index": result[2],
+                "loc": result[3],
+                "priority": result[4],
+                "frequency": result[5],
+                "modified": result[6],
+                "status": result[7],
+            }
+        return None
