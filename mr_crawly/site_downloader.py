@@ -9,26 +9,19 @@ import requests
 from config.configuration import get_logger
 from rq import Queue
 
+from mr_crawly.cache import CrawlStatus, URLCache
+
 
 class SiteDownloader:
     def __init__(
         self,
         seed_url: str,
-        max_pages: int = 10,
-        delay: float = 1.0,
-        parse=True,
         host="localhost",
         port=7777,
     ):
         self.seed_url = seed_url
-        self.max_pages = max_pages
-        self.delay = delay
-        self.visited_urls: set[str] = set()
-        self.seed_url = seed_url
-        self.to_visit: list[str] = [seed_url]
         self.robot_parser = RobotFileParser()
         self.logger = get_logger("crawler")
-        self.parse = parse
         self.host = host
         self.port = port
         self.results = dict.fromkeys(
@@ -36,8 +29,6 @@ class SiteDownloader:
                 "seed_url",
                 "sitemap_index",
                 "sitemap",
-                "max_pages",
-                "delay",
                 "parse",
                 "visited_urls",
                 "to_visit",
@@ -45,13 +36,10 @@ class SiteDownloader:
             ],
             None,
         )
-        self.sitemap_details = []
-        self.sitemap_indexes = defaultdict(list)
         self.host = host
         self.port = port
-        self.redis_conn = redis.Redis(
-            host=self.host, port=self.port, decode_responses=True
-        )
+        self.cache = URLCache(host=host, port=port, decode_responses=False)
+        # self.frontier_urls = self.cache.get_frontier_seeds(self.seed_url)
 
     def save_html(self, html: str, filename: str):
         with open(filename, "w", encoding="UTF-8") as f:
@@ -67,7 +55,7 @@ class SiteDownloader:
             self.robot_parser.read()
             return (
                 self.robot_parser.can_fetch("*", url)
-                or url in self.robot_parser.site_maps()
+                or 'sitemap' in url
             )
         except Exception as e:
             self.logger.warning(f"Error checking robots.txt for {url}: {e}")
@@ -86,15 +74,28 @@ class SiteDownloader:
         except Exception as e:
             self.logger.error(f"Error fetching {url}: {e}")
             return None, response.status_code
-        self.redis_conn.set(url, response.text)
-        return response, response.status_code
+        return response.text, response.status_code
 
 
-def download_page(url: str):
+def download_page(page_url: str):
     """Get the page from a webpage"""
-    downloader = SiteDownloader(url)
-    results = downloader.get_page_elements(url)
+    downloader = SiteDownloader(seed_url=seed_url)
+    cache = SiteDownloader.cache
+    content, req_status = downloader.get_page_elements(url)
     r = downloader.redis_conn
-    site_map_queue = Queue(connection=r, name="site_map")
-    job = site_map_queue.enqueue(url, args=[url])
-    return results, job
+    if req_status == 200:
+        # Store the content and update the status
+        cache.update_content(url, content, req_status)
+        cache.update_url(url,'status', CrawlStatus.SITE_MAP.value)
+        queue = Queue(connection=r, name='site_map')
+        # Add the successful url to the parse_queue
+        cache.add_page_to_parse(seed_url, url)
+    else:
+        cache.update_url(url,'status', CrawlStatus.ERROR.value)
+        queue = Queue(connection=r, name='db')
+        _ = queue.enqueue(url, args=[url])
+        # The below prevents the job from proceeding further in the pipeline
+        raise Exception(f"Error downloading {url}")
+
+    cache.queues = []
+    for url in downloader.frontier_urls:
