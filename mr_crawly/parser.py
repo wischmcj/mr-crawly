@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from config.configuration import get_logger
 
 from mr_crawly.cache import URLCache
-from mr_crawly.data import LinksTable
 
 
 class Parser:
@@ -26,8 +25,7 @@ class Parser:
         self.logger = get_logger("crawler")
         self.host = host
         self.port = port
-        self.cache = URLCache(host=host, port=port, decode_responses=False)
-        self.links_db = LinksTable("sqlite.db")
+        self.cache = URLCache(host=host, port=port)
 
     def request_page(self, url: str):
         """Get the contents of the sitemap"""
@@ -60,7 +58,8 @@ class Parser:
         return links
 
     def recurse_links(self, src_link: str) -> set[str]:
-        """Recursively get links from a webpage"""
+        """Returns the links in the page to
+        Manager to be downloaded then parsed"""
         self.to_visit.append(src_link)
         links = self.get_links(src_link)
         for link in links:
@@ -81,7 +80,6 @@ class Parser:
         self.visited_urls.add(current_url)
 
         new_links = self.get_links(current_url)
-        self.links_db.store_links(self.seed_url, current_url, new_links)
         return new_links
 
 
@@ -90,8 +88,7 @@ def extract_urls(args):
     seed_url, curr_url = args
     parser = Parser(seed_url, curr_url)
     new_links = parser.crawl()
-    for link in new_links:
-        parser.cache.request_download(link)
+    return new_links
 
 
 if __name__ == "__main__":

@@ -13,15 +13,20 @@ def main():
     logger.info("Starting crawler")
     parser = argparse.ArgumentParser(description="Basic Web Crawler")
     parser.add_argument("url", help="Starting URL to crawl")
-
-    # Included for testing mostly, but could be used to just pull web data for single page
-    parser.add_argument("--parse", action=argparse.BooleanOptionalAction, default=True)
-
     parser.add_argument(
         "--max-pages", type=int, default=10, help="Maximum number of pages to crawl"
     )
     parser.add_argument(
-        "--delay", type=float, default=1.0, help="Delay between requests in seconds"
+        "--num_workers", type=int, default=1, help="Delay between requests in seconds"
+    )
+    parser.add_argument(
+        "--retries", type=int, default=3, help="Delay between requests in seconds"
+    )
+    parser.add_argument(
+        "--debug",
+        type=int,
+        default=False,
+        help="If false, all operations will run synchronously",
     )
 
     args = parser.parse_args()
@@ -30,7 +35,13 @@ def main():
     formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print("Formatted datetime:", formatted_datetime)
 
-    manager = Manager(seed_url=args.url, max_pages=args.max_pages, parse=args.parse)
+    manager = Manager(
+        seed_url=args.url,
+        max_pages=args.max_pages,
+        num_workers=args.num_workers,
+        retries=args.retries,
+        debug=args.debug,
+    )
     atexit.register(manager.shutdown)
     manager.get_to_work()
 

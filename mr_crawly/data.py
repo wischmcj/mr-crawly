@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from config.configuration import get_logger
 
+from mr_crawly.cache import URLData
+
 
 @dataclass
 class Run:
@@ -83,6 +85,25 @@ class UrlTable:
         """
         )
         self.conn.commit()
+
+    def store_url(self, url_data: URLData, run_id: int):
+        """Store URL and its HTML content"""
+        url = url_data.url
+        html_content = url_data.content
+        try:
+            self.conn.execute(
+                "INSERT INTO url_html (url, html, run_id) VALUES (?, ?, ?)",
+                (url, html_content, run_id),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            # Update if URL already exists for this run
+            self.conn.execute(
+                "UPDATE url_html SET html = ? WHERE url = ? AND run_id = ?",
+                (html_content, url, run_id),
+            )
+            self.conn.commit()
+        return True
 
     def store_url_content(self, url: str, html_content: bytes, run_id: int):
         """Store URL and its HTML content"""

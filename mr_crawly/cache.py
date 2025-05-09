@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-import json
+import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Any
 
 import redis
 import rq
+from config.configuration import get_logger  # noqa
+from rq import Queue
+from rq.registry import StartedJobRegistry
+
+from data import UrlTable  # noqa
+
+logger = get_logger(__name__)
 
 
 class CrawlStatus(Enum):
@@ -17,6 +24,7 @@ class CrawlStatus(Enum):
     PARSE = "parse"
     DB = "db"
     ERROR = "error"
+    CLOSED = "closed"
 
 
 class UrlAttributes(Enum):
@@ -43,41 +51,38 @@ class SitemapDetails(Enum):
 
 @dataclass
 class URLData:
-    """Data structure for URL metadata"""
+    """`Data` structure for URL metadata"""
 
-    html: str | None = None
-    download_status: dict | None = None
-    source_url: str | None = None
-    sitemap_frequency: str | None = None
-    sitemap_priority: float | None = None
-    last_modified: str | None = None
+    url: str
+    content: dict | None = None
     status: CrawlStatus = CrawlStatus.FRONTIER
-    is_sitemap: bool | None = None
-    is_sitemap_index: bool | None = None
+    run_id: str | None = None
+    links: list[str] | None = None
+    created_at: str | None = None
+
+    # html: str | None = None
+    # download_status: dict | None = None
+    # source_url: str | None = None
+    # sitemap_frequency: str | None = None
+    # sitemap_priority: float | None = None
+    # last_modified: str | None = None
+    # status: CrawlStatus = CrawlStatus.FRONTIER
+    # is_sitemap: bool | None = None
+    # is_sitemap_index: bool | None = None
+    # kwargs: Dict[str, Any] = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    def __init__(self, a: int, b: str, **kwargs: Any):
+        self.a = a
+        self.b = b
+        self.kwargs = kwargs
 
 
 class URLCache:
     """Redis-based cache for URL data"""
 
-    def __init__(
-        self, host: str = "localhost", port: int = 7777, decode_responses: bool = False
-    ):
-        self.rdb = redis.Redis(host=host, port=port, decode_responses=decode_responses)
-        self.host = host
-        self.port = port
+    def __init__(self, redis_conn: redis.Redis):
+        self.rdb = redis_conn
         self.queues = []
-        # self.rdb.flushdb()
-
-    def add_queue(self, queue: rq.Queue) -> None:
-        """Add a queue to the cache"""
-        self.queues.append(queue)
-
-    def get_queue(self, name: str) -> rq.Queue:
-        """Get a queue from the cache"""
-        for queue in self.queues:
-            if queue.name == name:
-                return queue
-        return None
 
     def decode_data(self, data: dict) -> URLData:
         """Decode data from cache"""
@@ -110,22 +115,33 @@ class URLCache:
         if bstatus:
             status = bstatus.decode("utf-8")
         return content, status
-        # Deserialize and convert back to URLData
-        # data_dict = json.loads(data)
-        # data_dict["status"] = CrawlStatus(data_dict["status"])
-        # return URLData(**data_dict)
 
-    def get_all_urls(self) -> dict[str, URLData]:
+    def close_url(self, url: str) -> None:
+        """Close a URL"""
+        data = self.get_all_url(url)
+        if data:
+            self.rdb.delete(url)
+            if data.status != CrawlStatus.ERROR:
+                data.status = CrawlStatus.CLOSED
+        return data
+
+    def get_all_url(self, url: str) -> dict[str, URLData]:
         """Get all cached URL data"""
-        all_data = self.rdb.hgetall("urls")
+        all_data = self.rdb.hgetall(url)
         results = {}
 
-        for url, data in all_data.items():
-            data_dict = json.loads(data)
-            data_dict["status"] = CrawlStatus(data_dict["status"])
-            results[url] = URLData(**data_dict)
-
-        return results
+        for key, value in all_data.items():
+            try:
+                key = key.decode("utf-8")
+                value = value.decode("utf-8")
+            except Exception:
+                logger.warning(f"Failed to decode key: {key} or value: {value}")
+                pass
+            results[key] = value
+            # results["status"] = CrawlStatus(results["status"])
+        # ensures attrs match URLData, thus the db can store it
+        result = URLData(**results)
+        return result
 
     def update_status(self, url: str, status: CrawlStatus) -> None:
         """Update just the crawl status for a URL"""
@@ -151,8 +167,85 @@ class URLCache:
         self.rdb.sadd(f"{url}:to_parse", seed)
 
 
-def transfer_to_db(url: str, data: URLData, run_id: int) -> None:
-    """Transfer URL data to database"""
-    db = UrlTable()
-    db.store_url_content(url, data.html, data.run_id)
-    db.insert_url(url, data)
+class QueueManager:
+    """Redis-based cache for URL data"""
+
+    def __init__(self, redis_conn: redis.Redis, queues_async: bool = True):
+        self.rdb = redis_conn
+        self.queues = []
+        self.registries = []
+        self._init_queues(queues_async)
+        self._init_registries()
+        # self.rdb.flushdb()
+
+    def _init_queues(self, is_async: bool = True):
+        logger.info("Initializing Queues")
+        # Create different work queues for different tasks
+        self.site_map_queue = Queue(
+            connection=self.redis_conn, is_async=is_async, name="site_map"
+        )
+        self.frontier_queue = Queue(
+            connection=self.redis_conn, is_async=is_async, name="frontier"
+        )
+        self.parse_queue = Queue(
+            connection=self.redis_conn, is_async=is_async, name="parse"
+        )
+        self.queues.append(self.frontier_queue)
+        self.queues.append(self.site_map_queue)
+        self.queues.append(self.parse_queue)
+
+    def _init_registries(self):
+        logger.info("Initializing Registries")
+        for queue in self.queues:
+            self.registries.append(
+                StartedJobRegistry(connection=self.redis_conn, name=queue.name)
+            )
+
+    def _close_queues(self, force: bool = False):
+        if force:
+            logger.info("Forcefully cancelling jobs")
+            self._cancel_all_jobs()
+        else:
+            logger.info("Gracefully waiting for jobs to finish")
+            running = self.get_running_count()
+            time_waited = 0
+            check_every = 5
+            while running > 0 and time_waited < 120:
+                time.sleep(check_every)
+                running = self.get_running_count()
+                time_waited += check_every
+                if time_waited > 120:
+                    logger.warning(
+                        "Timeout waiting for jobs to finish, cancelling jobs"
+                    )
+                    self._cancel_all_jobs()
+        for queue in self.queues:
+            queue.close()
+
+    def _cancel_all_jobs(self):
+        for queue in self.queues:
+            for job in queue.jobs:
+                job.cancel()
+
+    def get_running_count(self):
+        running = 0
+        for registry in self.registries:
+            running += registry.get_job_count()
+        return running
+
+    def get_redis_conn(self):
+        """Get the Redis connection"""
+        return self.rdb
+
+    def add_queue(self, queue: rq.Queue) -> None:
+        """Add a queue to the cache"""
+        self.queues.append(queue)
+
+    def get_queues(self, name: str = None) -> list[rq.Queue]:
+        """Get a queue from the cache"""
+        if name is not None:
+            for queue in self.queues:
+                if queue.name == name:
+                    return [queue]
+        else:
+            return self.queues

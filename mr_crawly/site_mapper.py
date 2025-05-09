@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 from collections import defaultdict
-
-from mr_crawly.data import SitemapTable
 
 cwd = os.getcwd()
 loc = os.path.dirname(os.path.dirname(__file__))
 print(loc)
 sys.path.append(loc)
 
-import bs4
-from bs4 import BeautifulSoup
-from config.configuration import get_logger
+import bs4  # noqa
+from bs4 import BeautifulSoup  # noqa
+from config.configuration import get_logger  # noqa
 
-from mr_crawly.cache import CrawlStatus, URLCache
-from mr_crawly.site_downloader import SiteDownloader
-from mr_crawly.utils import parse_url
+from mr_crawly.cache import URLCache  # noqa
+from mr_crawly.site_downloader import SiteDownloader  # noqa
+from mr_crawly.utils import parse_url  # noqa
 
 
 class SiteMapper:
@@ -52,14 +49,13 @@ class SiteMapper:
         self.frontier = []
         self.host = host
         self.port = port
-        self.cache = URLCache(host=host, port=port, decode_responses=False)
-        self.sitemap_table = SitemapTable(
-            db_path=os.path.join(loc, "data", "sqlite.db")
-        )
+        self.cache = URLCache(host=host, port=port)
         self.downloader = SiteDownloader(seed_url=seed_url, host=host, port=port)
 
     def request_page(self, url: str):
-        """Get the contents of the sitemap"""
+        """We allow a direct connection here given the limited
+        number of pages we are requesting as part of this process
+        """
         content, status = self.cache.get_cached_response(url)
         if content is None:
             content, req_status = self.downloader.get_page_elements(url)
@@ -123,38 +119,18 @@ class SiteMapper:
             if contents is None:
                 self.logger.warning(f"No sitemap found for {url}")
                 self.sitemap_indexes = None
-                return None
-
-        if contents is None:
-            self.logger.warning(f"No sitemap found for {url}")
-            return None
+                raise Exception(f"No sitemap found for {url}")
 
         self.process_sitemaps(sitemap_url, scheme, index="root")
-        self.cache.update_url(sitemap_url, "status", CrawlStatus.SITE_MAP.value)
 
-        self.logger.info(
-            "Writing sitemap data to sqlite and the top level urls to rdb cache"
-        )
-        for detail in self.sitemap_details:
-            self.sitemap_table.store_sitemap_data(detail)
-            try:
-                fseed = detail.get("loc")
-                ## Save these as frontier seeds
-                self.cache.add_frontier_seed(url, fseed)
-            except:
-                pass
-
-        with open("data/" + url + "_sitemap_indexes.json", "w") as f:
-            json.dump(self.sitemap_indexes, f, default=str, indent=4)
-
-        return self.sitemap_indexes
+        return sitemap_url, self.sitemap_indexes, self.sitemap_details
 
 
 def map_site(url: str):
     """Map a site"""
     site_mapper = SiteMapper(url)
-    indexes = site_mapper.get_sitemap_urls(url)
-
+    result = site_mapper.get_sitemap_urls(url)
+    return result
     # parse_queue = Queue(connection=r, name="parse")
     # _ = parse_queue.enqueue(url, args=[url])
     # return site_mapper.sitemap_details
