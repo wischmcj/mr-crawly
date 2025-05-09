@@ -1,68 +1,63 @@
 from __future__ import annotations
 
-import time
 from urllib.parse import urljoin, urlparse
 
-import redis
-import requests
 from bs4 import BeautifulSoup
 from config.configuration import get_logger
-from rq import Queue
+
+from mr_crawly.cache import URLCache
+from mr_crawly.data import LinksTable
 
 
 class Parser:
     def __init__(
         self,
-        manager,
         seed_url: str,
+        current_url: str,
         max_pages: int = 10,
-        delay: float = 1.0,
         host: str = "localhost",
         port: int = 7777,
     ):
         self.seed_url = seed_url
+        self.current_url = current_url
         self.max_pages = max_pages
-        self.delay = delay
         self.visited_urls = set()
-        self.to_visit = [seed_url]
+        self.to_visit = []
         self.logger = get_logger("crawler")
         self.host = host
         self.port = port
-        self.redis_conn = redis.Redis(
-            host=self.host, port=self.port, decode_responses=True
-        )
+        self.cache = URLCache(host=host, port=port, decode_responses=False)
+        self.links_db = LinksTable("sqlite.db")
 
-    def request_page(self, url: str) -> tuple[str, int]:
-        """Request page HTML from manager"""
-        return self.manager.get_page(url)
-
-    def send_links(self, links: set[str]) -> None:
-        """Send aggregated links to manager for processing"""
-        self.manager.enqueue_link_aggregation(links)
+    def request_page(self, url: str):
+        """Get the contents of the sitemap"""
+        content, req_status = self.cache.get_cached_response(url)
+        if content is None or req_status != 200:
+            return None
+        return content
 
     def get_links(self, url: str) -> set[str]:
         """Extract all links from a webpage"""
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            links = set()
-
-            # Looking for <a></a> tags with an href
-            # Future state: look for other linkable tags like <img> or <script>
-            for anchor in soup.find_all("a", href=True):
+        content = self.request_page(url)
+        if content is None:
+            self.logger.warning(f"Skipping {url} (no content cached)")
+            return set()
+        soup = BeautifulSoup(content, "html.parser")
+        links = set()
+        # Looking for <a></a> tags with an href
+        # Future state: look for other linkable tags like <img> or <script>
+        for anchor in soup.find_all("a", href=True):
+            try:
                 href = anchor["href"]
                 absolute_url = urljoin(url, href)
-
-                # Only include URLs from the same domain
-                if urlparse(absolute_url).netloc == urlparse(url).netloc:
-                    links.add(absolute_url)
-
-            return links
-        except Exception as e:
-            self.logger.error(f"Error fetching {url}: {e}")
-            return set()
+            except Exception as e:
+                self.logger.error(f"Error parsing {url}: {e}")
+                return set()
+            # Only include URLs from the same domain
+            if urlparse(absolute_url).netloc == urlparse(url).netloc:
+                links.add(absolute_url)
+                links.add(url)
+        return links
 
     def recurse_links(self, src_link: str) -> set[str]:
         """Recursively get links from a webpage"""
@@ -73,55 +68,30 @@ class Parser:
                 self.to_visit.append(link)
         return links
 
-    def aggregate_links(self, url: str) -> set[str]:
-        """Aggregate links from sitemap and webpage"""
-        # Get sitemap/hompage links
-        webpage_links = self.get_links(url)
-        distinct_links = set(webpage_links)
-        # recursively get links
-        for link in distinct_links:
-            _ = self.get_links(link)
-
     # Crawling Logic
     def crawl(self):
         """Main crawling method"""
-        while self.to_visit and len(self.visited_urls) < self.max_pages:
-            current_url = self.to_visit.pop(0)
+        current_url = self.current_url
+        self.logger.info(f"Crawling: {current_url}")
+        if current_url is None:
+            return None
+        if not self.can_fetch(current_url):
+            self.logger.info(f"Skipping {current_url} (not allowed by robots.txt)")
+            return None
+        self.visited_urls.add(current_url)
 
-            if current_url in self.visited_urls:
-                continue
-
-            if not self.can_fetch(current_url):
-                self.logger.info(f"Skipping {current_url} (not allowed by robots.txt)")
-                continue
-
-            self.logger.info(f"Crawling: {current_url}")
-            self.visited_urls.add(current_url)
-
-            if self.parse:
-                # Get new links and add them to the queue
-                new_links = self.get_links(current_url)
-                self.to_visit.extend(
-                    link for link in new_links if link not in self.visited_urls
-                )
-
-            # Respect rate limiting
-            time.sleep(self.delay)
+        new_links = self.get_links(current_url)
+        self.links_db.store_links(self.seed_url, current_url, new_links)
+        return new_links
 
 
-def extract_urls(url: str):
+def extract_urls(args):
     """Extract URLs from a webpage"""
-    parser = Parser()
-    new_frontier_links = [url]
-    all_visited_urls = []
-    r = parser.redis_conn
-    while len(new_frontier_links) > 0:
-        new_frontier_links = parser.crawl()
-        for url in new_frontier_links:
-            parse_queue = Queue(connection=r, name="fronteir")
-            _ = parse_queue.enqueue(url, args=[url])
-        all_visited_urls.extend(parser.visited_urls)
-    return all_visited_urls
+    seed_url, curr_url = args
+    parser = Parser(seed_url, curr_url)
+    new_links = parser.crawl()
+    for link in new_links:
+        parser.cache.request_download(link)
 
 
 if __name__ == "__main__":

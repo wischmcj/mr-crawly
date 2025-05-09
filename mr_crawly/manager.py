@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import redis
-from rq import Queue, Worker
+from rq import Queue, Retry, Worker
 from rq.command import send_shutdown_command
 
 cwd = os.getcwd()
@@ -18,11 +18,12 @@ sys.path.append(loc)
 
 from parser import extract_urls  # noqa
 
+from cache import CrawlStatus, URLCache, transfer_to_db  # noqa
 from config.configuration import get_logger  # noqa
-from site_downloader import download_page  # noqa
+from site_downloader import download_pages  # noqa
 from site_mapper import map_site  # noqa
 
-from data import EventTable, RunTable, UrlTable  # noqa
+from data import RunTable, UrlTable  # noqa
 
 logger = get_logger(__name__)
 
@@ -30,6 +31,9 @@ logger = get_logger(__name__)
 def start_worker(queue, redis_conn):
     worker = Worker(connection=redis_conn, queues=[queue])
     worker.work()
+
+
+BACKOFF_STRATEGY = [10, 30, 60]
 
 
 class Manager:
@@ -53,12 +57,11 @@ class Manager:
         self.retries = retries
         self.parse = parse
         self.queues = []
-        self.host = host
-        self.port = port
         self.timeout = timeout
 
         self.parse_queue = None
         self.queues = []
+        self.cache = URLCache(host=host, port=port, decode_responses=False)
         self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
         self._init_dirs()
         self._init_db()
@@ -83,18 +86,22 @@ class Manager:
     def _init_db(self):
         # Initialize databases
         self.run_db = RunTable(self.rdb_path)
-        self.event_db = EventTable(self.rdb_path)
         self.url_db = UrlTable(self.rdb_path)
+        self.url_db.create_tables()
+        self.run_db.start_run(self.seed_url, self.max_pages)
+        self.cache.update_url(self.seed_url, "status", CrawlStatus.FRONTIER.value)
 
     def _init_queues(self):
         logger.info("Initializing Queues")
         # Create different work queues for different tasks
-        self.fronteir_queue = Queue(connection=self.redis_conn, name="fronteir")
+        self.frontier_queue = Queue(connection=self.redis_conn, name="frontier")
         self.site_map_queue = Queue(connection=self.redis_conn, name="site_map")
         self.parse_queue = Queue(connection=self.redis_conn, name="parse")
-        self.queues.append(self.fronteir_queue)
+        self.db_queue = Queue(connection=self.redis_conn, name="db")
+        self.queues.append(self.frontier_queue)
         self.queues.append(self.site_map_queue)
         self.queues.append(self.parse_queue)
+        self.queues.append(self.db_queue)
 
     def _start_workers(self):
         executor = ThreadPoolExecutor(max_workers=1)
@@ -120,6 +127,7 @@ class Manager:
             }
             send_shutdown_command(self.redis_conn, worker.name)
         workers = Worker.all(self.redis_conn)
+        # Wait for workers to close
         while len(workers) > 0:
             time.sleep(1)
             workers = Worker.all(self.redis_conn)
@@ -132,11 +140,19 @@ class Manager:
         shutil.copy(loc, self.rdb_path)
 
     ## Specify runtime behavior
-    def enqueue(self, url, req_queue, function, depends_on=None):
+    def enqueue(self, args, req_queue, function, depends_on=None):
         """Add a job to the specified queue"""
-        logger.debug(f"Enqueuing {url} in {req_queue.name}...")
-        # self.wait_for_workers(self.fronteir_queue)
-        job = req_queue.enqueue(function, args=(url,), depends_on=depends_on)
+        if isinstance(args, str):
+            args = (args,)
+        logger.debug(f"Enqueuing {args} in {req_queue.name}...")
+        # self.wait_for_workers(self.frontier_queue)
+        job = req_queue.enqueue(
+            function,
+            args=args,
+            depends_on=depends_on,
+            retry=Retry(max=self.retries),
+            interval=BACKOFF_STRATEGY,
+        )
         return job
 
     def enqueue_parsing(self, links):
@@ -148,24 +164,37 @@ class Manager:
         """Get size of all queues"""
         logger.debug("Getting queue sizes")
         return {
-            "fronteir": self.fronteir_queue.count,
+            "frontier": self.frontier_queue.count,
             "site_map": self.site_map_queue.count,
             "parse_page": self.parse_queue.count,
         }
 
-    def process_url(self, url):
+    def process_url(self, seed_url):
         """
         Queues the download, map_site, and parse_page jobs for the given url.
         Returns the download, map_site, and parse_page jobs.
         """
-        download_task = self.enqueue(url, self.fronteir_queue, download_page)  # noqa
-        map_site_task = self.enqueue(
-            url, self.site_map_queue, map_site, depends_on=download_task.id
-        )  # noqa
-        parse_task = self.enqueue(
-            url, self.parse_queue, extract_urls, depends_on=map_site_task.id
-        )  # noqa
-        return download_task, map_site_task, parse_task
+        map_site_task = self.enqueue(seed_url, self.site_map_queue, map_site)  # noqa
+        pubsub = self.redis_conn.pubsub()
+        pubsub.subscribe(f"{seed_url}:download_needed")
+
+        # Listen for messages
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                curr_url = message["data"].decode()
+                download_task = self.enqueue(
+                    curr_url, self.frontier_queue, download_pages
+                )  # noqa
+                parse_task = self.enqueue(
+                    (seed_url, curr_url),
+                    self.parse_queue,
+                    extract_urls,
+                    depends_on=map_site_task.id,
+                )  # noqa
+                db_write_task = self.enqueue(
+                    curr_url, self.db_queue, transfer_to_db, depends_on=parse_task.id
+                )  # noqa
+        return download_task, map_site_task, parse_task, db_write_task
 
 
 def crawl(seed_url: str):
@@ -174,7 +203,7 @@ def crawl(seed_url: str):
     r = manager.redis_conn
     workers = Worker.all(r)
     print(f"Workers: {workers}")
-    seed_job = manager.enqueue(seed_url, manager.fronteir_queue, download_page)  # noqa
+    seed_job = manager.enqueue(seed_url, manager.frontier_queue, download_page)  # noqa
     outstanding_jobs = manager.get_queue_sizes()
     while outstanding_jobs["download_html"] > 0:
         time.sleep(1)
