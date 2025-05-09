@@ -11,16 +11,14 @@ from config.configuration import get_logger  # noqa
 from rq import Queue
 from rq.registry import StartedJobRegistry
 
-from data import UrlTable  # noqa
-
 logger = get_logger(__name__)
 
 
 class CrawlStatus(Enum):
     """Enum for tracking URL crawl status"""
 
-    FRONTIER = "frontier"
     SITE_MAP = "site_map"
+    FRONTIER = "frontier"
     PARSE = "parse"
     DB = "db"
     ERROR = "error"
@@ -96,20 +94,16 @@ class URLCache:
             data[new_key] = new_val
         return data
 
-    def update_url(self, url: str, attr: URLData, value) -> None:
-        """Store URL data in cache"""
-        self.rdb.hset(url, attr, value)
-
     def update_content(self, url: str, content, status) -> None:
         """Store URL data in cache"""
         self.rdb.hset(url, "content", content)
-        self.rdb.hset(url, "req_status", status)
+        self.rdb.hset(url, "status", status)
 
     def get_cached_response(self, url: str) -> URLData | None:
         """Retrieve URL data from cache"""
         content, status = None, None
         bcontent = self.rdb.hget(url, "content")
-        bstatus = self.rdb.hget(url, "req_status")
+        bstatus = self.rdb.hget(url, "status")
         if bcontent:
             content = bcontent.decode("utf-8")
         if bstatus:
@@ -143,11 +137,25 @@ class URLCache:
         result = URLData(**results)
         return result
 
-    def update_status(self, url: str, status: CrawlStatus) -> None:
-        """Update just the crawl status for a URL"""
-        data = self.get_url_data(url)
-        if data:
-            data.status = status
+    def update_status(self, url: str, status: str) -> None:
+        """
+        Progresses the status of the URL through the crawl pipeline
+        """
+        if status not in CrawlStatus.__members__:
+            raise ValueError(f"Invalid status: {status}")
+        if status == "map_site":
+            self.rdb.hset(url, "status", CrawlStatus.FRONTIER.value)
+        elif status == "download":
+            self.rdb.hset(url, "status", CrawlStatus.PARSE.value)
+        elif status == "parse":
+            self.rdb.hset(url, "status", CrawlStatus.DB.value)
+        elif status == "db" or status == "error":
+            self.rdb.hset(url, "status", CrawlStatus.CLOSED.value)
+            self.close_url(url)
+        else:
+            data = self.get_url_data(url)
+            if data:
+                data.status = status
             self.set_url_data(url, data)
 
     def request_download(self, seed_url: str, url: str) -> list[str]:
@@ -182,14 +190,12 @@ class QueueManager:
         logger.info("Initializing Queues")
         # Create different work queues for different tasks
         self.site_map_queue = Queue(
-            connection=self.redis_conn, is_async=is_async, name="site_map"
+            connection=self.rdb, is_async=is_async, name="site_map"
         )
         self.frontier_queue = Queue(
-            connection=self.redis_conn, is_async=is_async, name="frontier"
+            connection=self.rdb, is_async=is_async, name="frontier"
         )
-        self.parse_queue = Queue(
-            connection=self.redis_conn, is_async=is_async, name="parse"
-        )
+        self.parse_queue = Queue(connection=self.rdb, is_async=is_async, name="parse")
         self.queues.append(self.frontier_queue)
         self.queues.append(self.site_map_queue)
         self.queues.append(self.parse_queue)
@@ -198,7 +204,7 @@ class QueueManager:
         logger.info("Initializing Registries")
         for queue in self.queues:
             self.registries.append(
-                StartedJobRegistry(connection=self.redis_conn, name=queue.name)
+                StartedJobRegistry(connection=self.rdb, name=queue.name)
             )
 
     def _close_queues(self, force: bool = False):

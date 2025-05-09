@@ -9,3 +9,4 @@ mr_crawly/events.py
 data/sqlite.db
 unused_code/recursive_sitemaps.py
 unused_code/events_db.py
+*/sqlite.db

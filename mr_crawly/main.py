@@ -2,10 +2,24 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import time
 from datetime import datetime
-from logging import Manager
+from venv import logger
 
 from config.configuration import get_logger
+from manager import Manager
+
+
+def crawl(manager):
+    """Crawl the given url"""
+    manager.process_url(manager.seed_url)
+
+    get_running_count = manager.qmanager.get_running_count()
+    while get_running_count > 0:
+        logger.info(f"Waiting for {get_running_count} jobs to finish")
+        time.sleep(10)
+        get_running_count = manager.qmanager.get_running_count()
+    manager.shutdown()
 
 
 def main():
@@ -43,7 +57,7 @@ def main():
         debug=args.debug,
     )
     atexit.register(manager.shutdown)
-    manager.get_to_work()
+    crawl(manager)
 
 
 if __name__ == "__main__":

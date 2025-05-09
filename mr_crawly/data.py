@@ -3,9 +3,8 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from cache import URLData
 from config.configuration import get_logger
-
-from mr_crawly.cache import URLData
 
 
 @dataclass
@@ -76,7 +75,7 @@ class UrlTable:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
                 content BLOB,
-                req_status INTEGER,
+                status INTEGER,
                 run_id INTEGER,
                 links TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -89,56 +88,22 @@ class UrlTable:
     def store_url(self, url_data: URLData, run_id: int):
         """Store URL and its HTML content"""
         url = url_data.url
-        html_content = url_data.content
+        content = url_data.content
+        status = url_data.status
         try:
             self.conn.execute(
-                "INSERT INTO url_html (url, html, run_id) VALUES (?, ?, ?)",
-                (url, html_content, run_id),
+                "INSERT INTO url_html (url, content, status, run_id) VALUES (?, ?, ?)",
+                (url, content, status, run_id),
             )
             self.conn.commit()
         except sqlite3.IntegrityError:
             # Update if URL already exists for this run
             self.conn.execute(
                 "UPDATE url_html SET html = ? WHERE url = ? AND run_id = ?",
-                (html_content, url, run_id),
+                (content, url, run_id),
             )
             self.conn.commit()
         return True
-
-    def store_url_content(self, url: str, html_content: bytes, run_id: int):
-        """Store URL and its HTML content"""
-        try:
-            self.conn.execute(
-                "INSERT INTO url_html (url, html, run_id) VALUES (?, ?, ?)",
-                (url, html_content, run_id),
-            )
-            self.conn.commit()
-        except sqlite3.IntegrityError:
-            # Update if URL already exists for this run
-            self.conn.execute(
-                "UPDATE url_html SET html = ? WHERE url = ? AND run_id = ?",
-                (html_content, url, run_id),
-            )
-            self.conn.commit()
-
-    def get_url_content(self, url: str) -> bytes:
-        """Retrieve HTML content for a URL"""
-        cursor = self.conn.execute(
-            "SELECT html FROM url_html WHERE url = ? ORDER BY created_at DESC LIMIT 1",
-            (url,),
-        )
-        result = cursor.fetchone()
-        return result[0] if result else None
-
-    def url_exists(self, url: str, run_id: int = None) -> bool:
-        """Check if URL has already been stored"""
-        if run_id:
-            cursor = self.conn.execute(
-                "SELECT 1 FROM url_html WHERE url = ? AND run_id = ?", (url, run_id)
-            )
-        else:
-            cursor = self.conn.execute("SELECT 1 FROM url_html WHERE url = ?", (url,))
-        return cursor.fetchone() is not None
 
 
 class LinksTable:
@@ -249,27 +214,3 @@ class SitemapTable:
                 ),
             )
             self.conn.commit()
-
-    def get_sitemap_data(self, source_url: str, index_url: str = None) -> dict:
-        """Retrieve sitemap data"""
-        if index_url:
-            cursor = self.conn.execute(
-                "SELECT * FROM sitemap_data WHERE source_url = ? AND index_url = ?",
-                (source_url, index_url),
-            )
-        else:
-            cursor = self.conn.execute(
-                "SELECT * FROM sitemap_data WHERE source_url = ?", (source_url,)
-            )
-        result = cursor.fetchone()
-        if result:
-            return {
-                "source_url": result[1],
-                "index": result[2],
-                "loc": result[3],
-                "priority": result[4],
-                "frequency": result[5],
-                "modified": result[6],
-                "status": result[7],
-            }
-        return None

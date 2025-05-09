@@ -3,11 +3,10 @@ from __future__ import annotations
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
+import redis
 import requests
+from cache import URLCache
 from config.configuration import get_logger
-from rq import Queue
-
-from mr_crawly.cache import CrawlStatus, URLCache
 
 
 class SiteDownloader:
@@ -31,7 +30,8 @@ class SiteDownloader:
         )
         self.host = host
         self.port = port
-        self.cache = URLCache(host=host, port=port)
+        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
+        self.cache = URLCache(self.redis_conn)
         # self.frontier_urls = self.cache.get_frontier_seeds(self.seed_url)
 
     def save_html(self, html: str, filename: str):
@@ -59,30 +59,12 @@ class SiteDownloader:
 
         response = requests.get(url, timeout=10)
         self.logger.debug(f"Getting elements for: {url}")
-        try:
-            response.raise_for_status()
-        except Exception as e:
-            self.logger.error(f"Error fetching {url}: {e}")
-            return None, response.status_code
+        response.raise_for_status()
         return response.text, response.status_code
 
 
 def download_page(seed_url: str, page_url: str):
     """Get the page from a webpage"""
-    downloader = SiteDownloader(seed_url=page_url)
-    cache = SiteDownloader.cache
-    content, req_status = downloader.get_page_elements(page_url)
-    r = downloader.redis_conn
-    if req_status == 200:
-        # Store the content and update the status
-        cache.update_content(page_url, content, req_status)
-        cache.update_url(seed_url, "status", CrawlStatus.SITE_MAP.value)
-        queue = Queue(connection=r, name="site_map")
-        # Add the successful url to the parse_queue
-        cache.add_page_to_parse(seed_url, page_url)
-    else:
-        cache.update_url(seed_url, "status", CrawlStatus.ERROR.value)
-        queue = Queue(connection=r, name="db")
-        _ = queue.enqueue(seed_url, page_url, args=(seed_url, page_url))
-        # The below prevents the job from proceeding further in the pipeline
-        raise Exception(f"Error downloading {seed_url}")
+    downloader = SiteDownloader(page_url=page_url)
+    results = downloader.get_page_elements(page_url)
+    return results

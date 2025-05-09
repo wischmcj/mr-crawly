@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import redis
-from rq import Callback, Retry, Worker
+from rq import Retry, Worker
 from rq.command import send_shutdown_command
 
 cwd = os.getcwd()
@@ -24,8 +24,7 @@ from config.configuration import get_logger  # noqa
 from site_downloader import download_page  # noqa
 from site_mapper import map_site  # noqa
 
-from data import RunTable, UrlTable  # noqa
-from mr_crawly.data import LinksTable  # noqa
+from data import LinksTable, RunTable, SitemapTable, UrlTable  # noqa
 
 logger = get_logger(__name__)
 
@@ -64,33 +63,38 @@ class Manager:
         self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
         self.cache = URLCache(self.redis_conn)
         self.qmanager = QueueManager(self.redis_conn, self.is_async)
-        self.links_db = LinksTable("sqlite.db")
         self._init_dirs()
         self._init_db()
         self._start_workers()
 
     def _init_dirs(self):
-        self.data_dir = os.path.join(os.path.dirname(__file__), "data")
+        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
         try:
+            print("Making directory" + self.data_dir)
             os.makedirs(self.data_dir, exist_ok=True)
         except FileExistsError:
+            print("Directory already exists")
             pass
         logger.info("Initializing Directories")
-        self.data_dir = os.path.join(os.path.dirname(__file__), f"data/{self.run_id}")
+        self.data_dir = os.path.join(self.data_dir, f"{self.run_id}")
         try:
+            print("Making directory" + self.data_dir)
             os.makedirs(self.data_dir, exist_ok=True)
         except FileExistsError:
+            print("Directory already exists")
             pass
         self.rdb_path = os.path.join(self.data_dir, "data.rdb")
 
     ## Specify start-up behavior
     def _init_db(self):
         # Initialize databases
-        self.run_db = RunTable(self.rdb_path)
-        self.url_db = UrlTable(self.rdb_path)
+        print(self.data_dir)
+        self.run_db = RunTable(self.data_dir + "/sqlite.db")
+        self.url_db = UrlTable(self.data_dir + "/sqlite.db")
+        self.links_db = LinksTable(self.data_dir + "/sqlite.db")
+        self.sitemap_table = SitemapTable(self.data_dir + "/sqlite.db")
         self.url_db.create_tables()
         self.run_db.start_run(self.seed_url, self.max_pages)
-        # self.cache.update_url(self.seed_url, "status", CrawlStatus.FRONTIER.value)
 
     def _start_workers(self):
         """
@@ -107,10 +111,10 @@ class Manager:
 
     ## Specify shutdown behavior
     def shutdown(self, force: bool = False):
-        self.save_cache()
+        self._stop_workers()
         self.run_db.complete_run(self.run_id)
         self.qmanager._close_queues(force=force)
-        self._stop_workers()
+        self.save_cache()
 
     def _flush_db(self):
         """Flush the database"""
@@ -140,23 +144,28 @@ class Manager:
         self.redis_conn.save()
         shutil.copy(loc, self.rdb_path)
 
-    def on_download_success(self, job, connection, queue, result):
-        """Callback for when a download job succeeds"""
-        url = job.args[0]
-        self.visited_urls.add(url)
-        logger.info(f"Download job {url} succeeded")
-
     ## Specify runtime behavior
-    def enqueue(self, args, req_queue, function, depends_on=None, on_success=None):
-        """Add a job to the specified queue"""
+    def enqueue(
+        self,
+        args,
+        req_queue,
+        function,
+        on_success_callback,
+        on_failure_callback,
+        depends_on=None,
+    ):
+        """Add a job to the specified queue, with the
+        optionally specified dependencies and callbacks"""
         if isinstance(args, str):
             args = (args,)
-        logger.debug(f"Enqueuing {args} in {req_queue.name}...")
-        # self.wait_for_workers(self.frontier_queue)
+        logger.info(
+            f"Enqueuing {args} in {req_queue.name}: {on_success_callback} {on_failure_callback}"
+        )
         job = req_queue.enqueue(
             function,
             args=args,
-            on_success=Callback(on_success),
+            on_success=on_success_callback,
+            on_failure=on_failure_callback,
             depends_on=depends_on,
             retry=Retry(max=self.retries),
             interval=BACKOFF_STRATEGY,
@@ -164,21 +173,90 @@ class Manager:
         return job
 
     def enqueue_page(self, seed_url, curr_url):
-        """Add a download job to the queue"""
+        """
+        This represents the crawling of a single page.
+        1. Download the content, if possible, cache to redis
+        2. Extract urls from the page, return them
+        3. Enqueue the urls for parsing
+        """
         logger.debug(f"Enqueuing download for {curr_url}")
         download_task = self.enqueue(
-            (seed_url, curr_url), self.frontier_queue, download_page
+            (seed_url, curr_url), self.qmanager.frontier_queue, download_page
         )  # noqa
         parse_task = self.enqueue(
             (seed_url, curr_url),
-            self.parse_queue,
+            self.qmanager.parse_queue,
             extract_urls,
             depends_on=download_task.id,
             on_success=self.on_parse_success,
+            on_failure=self.on_parse_failure,
         )  # noqa
 
         return download_task, parse_task
 
+    #   General on end functions to update status/save data
+    def on_success(self, job, connection, result, func_name):
+        """Callback for when a job succeeds"""
+        url = job.args[0]
+        logger.info(f"{func_name} job {job.id} succeeded")
+        self.cache.update_status(url, "status", func_name)
+        return url, result
+
+    def on_failure(self, job, connection, type, value, traceback, func_name):
+        """Callback for when a job succeeds"""
+        url = job.args[0]
+        logger.info(f"{func_name} job {job.id} failed")
+        if func_name != "map_site":
+            url_data = self.cache.update_status(url, "status", "error")
+            if url_data:
+                self.url_db.store_url_content(url_data, self.run_id)
+                self.url_db.store_url(url_data)
+        return url
+
+    # Map site specific on end functions
+    def on_map_success(self, job, connection, result):
+        url, result = self.on_success(job, connection, result, "map_site")
+        """Callback for when a site mapping job succeeds"""
+        root_sitemap_url, sitemap_indicies, sitemap_details = result
+        self.logger.info(
+            "Writing sitemap data to sqlite and the top level urls to rdb cache"
+        )
+        with open(f"{self.data_dir}/sitemap_indexes.json", "w") as f:
+            json.dump(sitemap_indicies, f, default=str, indent=4)
+
+        for detail in sitemap_details:
+            self.sitemap_table.store_sitemap_data(detail)
+            url = detail.get("loc")
+            self.enqueue_page(self.seed_url, url)
+
+    def on_map_failure(self, job, connection, type, value, traceback):
+        """Callback for when a site mapping job fails"""
+        url, result = self.on_failure(
+            job, connection, type, value, traceback, "map_site"
+        )
+        logger.info("Utilizing fallback to seed_url links")
+        self.enqueue_page(self.seed_url, self.seed_url)
+
+    # Download specific on end functions
+    def on_download_success(self, job, connection, queue, result):
+        """
+        When a download success, progress the urls status,
+            and enqueue the page for parsing.
+        """
+        url, result = self.on_success(job, connection, result, "download")
+        self.cache.update_content(url, result[0], result[1])
+        self.visited_urls.add(url)
+        if len(self.visited_urls) >= self.max_pages:
+            # Allow submitted tasks to finish, but shutdown workers
+            logger.info(f"Downloaded {len(self.visited_urls)} urls")
+            logger.info("Shutting down...")
+            self.shutdown()
+
+    def on_download_failure(self, job, connection, type, value, traceback):
+        """Callback for when a download job fails"""
+        url, result = self.on_failure(job, connection, type, value, traceback, "error")
+
+    # Parse specific on end functions
     def on_parse_success(self, job, connection, result):
         """Callback for when a parse job succeeds"""
         logger.info(f"Parse job {job.id} succeeded")
@@ -186,38 +264,10 @@ class Manager:
         self.links_db.store_links(seed_url, current_url, new_links)
         for link in new_links:
             self.enqueue_page(seed_url, link)
-        url_data = self.cache.close_url(current_url)
-        if url_data:
-            self.url_db.store_url_content(url_data, self.run_id)
-            self.url_db.store_url(url_data)
 
-    def on_map_success(self, job, connection, result):
-        """Callback for when a site mapping job succeeds"""
-        logger.info(f"Parse job {job.id} succeeded")
-        root_sitemap_url, sitemap_indicies, sitemap_details = result
-        self.cache.update_url(root_sitemap_url, "status", CrawlStatus.SITE_MAP.value)
-
-        self.logger.info(
-            "Writing sitemap data to sqlite and the top level urls to rdb cache"
-        )
-        for detail in self.sitemap_details:
-            self.sitemap_table.store_sitemap_data(detail)
-            url = detail.get("loc")
-            try:
-                fseed = detail.get("loc")
-                ## Save these as frontier seeds
-                self.cache.add_frontier_seed(url, fseed)
-            except Exception:
-                pass
-
-    def on_map_failure(self, job, connection, type, value, traceback):
-        """Callback for when a site mapping job fails"""
-        logger.info(f"Error Mapping site: {value}")
-        logger.info("Utilizing fallback to seed_url links")
-        self.enqueue_page(self.seed_url, self.seed_url)
-
-        with open(f"{self.data_dir}/sitemap_indexes.json", "w") as f:
-            json.dump(self.sitemap_indexes, f, default=str, indent=4)
+    def on_parse_failure(self, job, connection, type, value, traceback):
+        """Callback for when a download job fails"""
+        url, result = self.on_failure(job, connection, type, value, traceback, "error")
 
     def process_url(self, seed_url):
         """
@@ -225,37 +275,9 @@ class Manager:
         Returns the download, map_site, and parse_page jobs.
         """
         _ = self.enqueue(
-            seed_url, self.site_map_queue, map_site, on_success=self.on_map_success
+            args=seed_url,
+            req_queue=self.qmanager.site_map_queue,
+            function=map_site,
+            on_success_callback=self.on_map_success,
+            on_failure_callback=self.on_map_failure,
         )  # noqa
-        pubsub = self.redis_conn.pubsub()
-        pubsub.subscribe(f"{seed_url}:download_needed")
-
-        # Listen for messages
-        for message in pubsub.listen():
-            if message["type"] == "message":
-                curr_url = message["data"].decode()
-                self.enqueue_page(seed_url, curr_url)
-
-
-def crawl(seed_url: str, debug: bool = True):
-    """Crawl the given url"""
-    manager = Manager()
-    manager.process_url(seed_url)
-
-    get_running_count = manager.qmanager.get_running_count()
-    while get_running_count > 0:
-        logger.info(f"Waiting for {get_running_count} jobs to finish")
-        time.sleep(10)
-        get_running_count = manager.qmanager.get_running_count()
-
-    seed_job = manager.enqueue(seed_url, manager.frontier_queue, download_page)  # noqa
-    outstanding_jobs = manager.get_queue_sizes()
-    while outstanding_jobs["download_html"] > 0:
-        time.sleep(1)
-        outstanding_jobs = manager.get_queue_sizes()
-        print(f"Outstanding jobs: {outstanding_jobs}")
-    return manager
-
-
-if __name__ == "__main__":
-    crawl("https://www.google.com/sitemap.xml")

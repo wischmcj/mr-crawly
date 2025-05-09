@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from urllib.parse import urljoin, urlparse
 
+import redis
 from bs4 import BeautifulSoup
+from cache import URLCache
 from config.configuration import get_logger
-
-from mr_crawly.cache import URLCache
 
 
 class Parser:
@@ -25,7 +25,8 @@ class Parser:
         self.logger = get_logger("crawler")
         self.host = host
         self.port = port
-        self.cache = URLCache(host=host, port=port)
+        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
+        self.cache = URLCache(self.redis_conn)
 
     def request_page(self, url: str):
         """Get the contents of the sitemap"""

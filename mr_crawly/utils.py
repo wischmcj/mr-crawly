@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from urllib.parse import urlparse
 
 
@@ -21,3 +22,9 @@ def create_dir(dir_name):
     except PermissionError as err:
         print(f"Permission denied: Unable to create '{dir_name}'.")
         raise err
+
+
+def add(a, b):
+    """Add two numbers"""
+    time.sleep(5)
+    return a + b

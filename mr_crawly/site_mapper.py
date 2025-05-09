@@ -4,6 +4,8 @@ import os
 import sys
 from collections import defaultdict
 
+import redis
+
 cwd = os.getcwd()
 loc = os.path.dirname(os.path.dirname(__file__))
 print(loc)
@@ -11,11 +13,10 @@ sys.path.append(loc)
 
 import bs4  # noqa
 from bs4 import BeautifulSoup  # noqa
+from cache import URLCache  # noqa
 from config.configuration import get_logger  # noqa
-
-from mr_crawly.cache import URLCache  # noqa
-from mr_crawly.site_downloader import SiteDownloader  # noqa
-from mr_crawly.utils import parse_url  # noqa
+from site_downloader import SiteDownloader  # noqa
+from utils import parse_url  # noqa
 
 
 class SiteMapper:
@@ -49,8 +50,9 @@ class SiteMapper:
         self.frontier = []
         self.host = host
         self.port = port
-        self.cache = URLCache(host=host, port=port)
-        self.downloader = SiteDownloader(seed_url=seed_url, host=host, port=port)
+        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
+        self.cache = URLCache(self.redis_conn)
+        self.downloader = SiteDownloader(page_url=seed_url, host=host, port=port)
 
     def request_page(self, url: str):
         """We allow a direct connection here given the limited
@@ -131,9 +133,6 @@ def map_site(url: str):
     site_mapper = SiteMapper(url)
     result = site_mapper.get_sitemap_urls(url)
     return result
-    # parse_queue = Queue(connection=r, name="parse")
-    # _ = parse_queue.enqueue(url, args=[url])
-    # return site_mapper.sitemap_details
 
 
 if __name__ == "__main__":
