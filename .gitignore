@@ -4,3 +4,9 @@ settings.json
 docs/Engineering_Coding_Test.pdf
 *.log
 *.pyc
+google_sitemap.json
+mr_crawly/events.py
+data/sqlite.db
+unused_code/recursive_sitemaps.py
+unused_code/events_db.py
+*/sqlite.db

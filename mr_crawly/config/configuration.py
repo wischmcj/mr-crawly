@@ -3,17 +3,20 @@ from __future__ import annotations
 import logging
 import logging.config
 import os
+import sys
 
 import toml
 import yaml
 
 cwd = os.getcwd()
-# Read in environment variables, set defaults if not present
-loc = os.path.dirname(__file__)
-print(f"Current working directory: {cwd}")
+loc = os.path.dirname(os.path.dirname(__file__))
+print(loc)
+sys.path.append(loc)
+# sys.path.append(os.path.dirname(cwd))
+#
 
-config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config.toml")
-log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/logging_config.yml")
+config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config/config.toml")
+log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/config/logging_config.yml")
 
 
 def _load_console_log():
