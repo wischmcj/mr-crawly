@@ -35,9 +35,9 @@ class DatabaseManager:
         """Start a new crawl run"""
         return self.run_db.start_run(run_id, seed_url, max_pages)
 
-    def complete_run(self, run_id: str) -> None:
+    def complete_run(self, run_id: str, status: str = "completed") -> None:
         """Complete a crawl run"""
-        self.run_db.complete_run(run_id)
+        self.run_db.complete_run(run_id, status)
 
     def store_url(self, url_data: URLData, run_id: str, parent_url: str = None) -> None:
         """Store URL data in database"""
@@ -166,13 +166,14 @@ class RunTable(BaseTable):
         )
         return self.cursor.lastrowid
 
-    def complete_run(self, run_id: str):
+    def complete_run(self, run_id: str, status: str = "completed"):
         """Mark a run as completed and set end time"""
         res = self.execute_query(
             """UPDATE runs SET
-                            end_time = datetime('now')
+                            end_time = datetime('now'),
+                            status = ?
                             WHERE run_id = ?;""",
-            (run_id),
+            (run_id, status),
         )
         return res
 
