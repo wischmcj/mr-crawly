@@ -118,3 +118,6 @@ class Manager:
             return False
         else:
             return True
+
+    def crawl():
+        pass
