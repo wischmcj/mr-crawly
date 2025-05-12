@@ -33,19 +33,23 @@ class TestParser(unittest.TestCase):
         expected_links = {urljoin(test_url, "/page1"), "https://example.com/page2"}
 
         self.assertEqual(links, expected_links)
-        self.mock_manager.visit_tracker.add_to_visit.assert_called()
+        self.mock_manager.visit_tracker.add_page_to_visit.assert_called()
 
     def test_on_success(self):
         """Test successful parsing callback"""
         test_url = "https://example.com"
         self.parser.on_success(test_url)
-        self.mock_manager.cache.update_status.assert_called_with(test_url, "parsed")
+        self.mock_manager.crawl_tracker.update_status.assert_called_with(
+            test_url, "parsed"
+        )
 
     def test_on_failure(self):
         """Test failure parsing callback"""
         test_url = "https://example.com"
         self.parser.on_failure(test_url)
-        self.mock_manager.cache.update_status.assert_called_with(test_url, "error")
+        self.mock_manager.crawl_tracker.update_status.assert_called_with(
+            test_url, "error"
+        )
         self.mock_manager.db_manager.store_url.assert_called()
 
     def test_parse_success(self):
@@ -56,7 +60,9 @@ class TestParser(unittest.TestCase):
         self.parser.url = test_url
         self.parser.parse(test_url, test_content)
 
-        self.mock_manager.cache.update_status.assert_called_with(test_url, "parsed")
+        self.mock_manager.crawl_tracker.update_status.assert_called_with(
+            test_url, "parsed"
+        )
 
     def test_on_failure_called_after_exception(self):
         """Test failure parsing callback"""
@@ -68,7 +74,9 @@ class TestParser(unittest.TestCase):
             test_content = "<html><a href='/test'>Test</a></html>"
             self.parser.parse(url=test_url, content=test_content)
             self.mock_manager.db_manager.store_url.assert_called()
-            self.mock_manager.cache.update_status.assert_called_with(test_url, "error")
+            self.mock_manager.crawl_tracker.update_status.assert_called_with(
+                test_url, "error"
+            )
             self.mock_manager.db_manager.store_url.assert_called()
 
     def test_parse_failure(self):
@@ -79,7 +87,9 @@ class TestParser(unittest.TestCase):
         self.parser.url = test_url
         self.parser.parse(test_url, test_content)
 
-        self.mock_manager.cache.update_status.assert_called_with(test_url, "error")
+        self.mock_manager.crawl_tracker.update_status.assert_called_with(
+            test_url, "error"
+        )
 
     def test_invalid_href(self):
         """Test handling of invalid href attributes"""

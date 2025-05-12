@@ -4,8 +4,7 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-
-from simple_crawler.manager import Manager
+from manager import Manager
 
 
 @pytest.fixture

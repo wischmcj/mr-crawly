@@ -17,6 +17,7 @@ class SiteDownloader:
         self.cache = manager.cache
         self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
+        self.crawl_tracker = manager.crawl_tracker
 
     def save_html(self, html: str, filename: str):
         with open(filename, "w", encoding="UTF-8") as f:
@@ -44,12 +45,12 @@ class SiteDownloader:
         self.crawl_delay = self.robot_parser.crawl_delay("*")
 
     def on_success(self, url: str, content: str, status_code: int):
-        self.db_manager.update_content(url, content, status_code)
-        self.cache.update_status(url, "downloaded")
+        self.cache.update_content(url, content, status_code)
+        self.crawl_tracker.update_status(url, "downloaded")
 
     def on_failure(self, url: str, crawl_status: str, content: str, status_code: int):
-        self.db_manager.update_content(url, content, status_code)
-        data = self.cache.update_status(url, crawl_status)
+        self.cache.update_content(url, content, status_code)
+        data = self.crawl_tracker.update_status(url, crawl_status)
         self.db_manager.store_url(data, self.manager.run_id, self.manager.seed_url)
 
     def get_page_elements(self, url: str) -> set[str]:

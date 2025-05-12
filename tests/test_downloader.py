@@ -32,7 +32,9 @@ def test_on_success(downloader):
     downloader.manager.db_manager.update_content.assert_called_once_with(
         url, content, status_code
     )
-    downloader.manager.cache.update_status.assert_called_once_with(url, "downloaded")
+    downloader.manager.crawl_tracker.update_status.assert_called_once_with(
+        url, "downloaded"
+    )
 
 
 def test_on_failure(downloader):
@@ -42,14 +44,16 @@ def test_on_failure(downloader):
     content = "<html>error</html>"
     status_code = 404
 
-    downloader.manager.cache.update_status.return_value = {"some": "data"}
+    downloader.manager.crawl_tracker.update_status.return_value = {"some": "data"}
 
     downloader.on_failure(url, crawl_status, content, status_code)
 
     downloader.manager.db_manager.update_content.assert_called_once_with(
         url, content, status_code
     )
-    downloader.manager.cache.update_status.assert_called_once_with(url, crawl_status)
+    downloader.manager.crawl_tracker.update_status.assert_called_once_with(
+        url, crawl_status
+    )
     downloader.manager.db_manager.store_url.assert_called_once_with(
         {"some": "data"}, downloader.manager.run_id, downloader.manager.seed_url
     )
@@ -91,7 +95,7 @@ def test_get_page_elements_disallowed(mock_requests, downloader):
         downloader.manager.db_manager.update_content.assert_called_once_with(
             url, content, status
         )
-        downloader.manager.cache.update_status.assert_called_once_with(
+        downloader.manager.crawl_tracker.update_status.assert_called_once_with(
             url, "disallowed"
         )
         downloader.manager.db_manager.store_url.assert_called()
@@ -120,6 +124,6 @@ def test_get_page_elements_success(mock_requests, downloader):
         downloader.manager.db_manager.update_content.assert_called_once_with(
             url, response_content, status_code
         )
-        downloader.manager.cache.update_status.assert_called_once_with(
+        downloader.manager.crawl_tracker.update_status.assert_called_once_with(
             url, "downloaded"
         )

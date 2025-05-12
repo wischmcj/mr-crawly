@@ -76,8 +76,8 @@ class Manager:
 
     def _init_cache(self):
         self.cache = URLCache(self.rdb)
-        self.ctracker = CrawlTracker(self.rdb)
-        self.vtracker = VisitTracker(self.rdb)
+        self.crawl_tracker = CrawlTracker(self.rdb)
+        self.visit_tracker = VisitTracker(self.rdb)
 
     def shutdown(self):
         """Shutdown the manager"""
@@ -92,28 +92,3 @@ class Manager:
         logger.info("Saving cache")
         self.rdb.save()
         shutil.copy(os.path.dirname(loc) + "/dump.rdb", self.rdb_path)
-
-    def needs_visitation(self, url):
-        """
-        Validate the url
-        """
-        visited = self.vtracker.is_page_visited(url)
-        # Check if URL is already visited
-        if visited:
-            logger.debug(f"Already visited {url}")
-            return False
-        else:
-            return True
-
-    def below_page_limit(self):
-        """
-        Check if we've hit max pages
-        """
-        visited = self.cache.get_pages_visited()
-        # Check if we've hit max pages
-        if len(visited) >= self.max_pages:
-            logger.info(f"Hit max pages limit of {self.max_pages}")
-            self.shutdown()
-            return False
-        else:
-            return True

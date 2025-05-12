@@ -4,8 +4,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from config.configuration import get_logger
-
-from simple_crawler.manager import Manager
+from manager import Manager
 
 # from utils import BaseWorkClass
 
@@ -20,6 +19,7 @@ class Parser:
         self.cache = manager.cache
         self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
+        self.crawl_tracker = manager.crawl_tracker
 
     def get_links_from_content(self, url: str, content: str) -> set[str]:
         """Extract all links from a webpage"""
@@ -39,16 +39,16 @@ class Parser:
             # Only include URLs from the same domain
             if urlparse(absolute_url).netloc == urlparse(url).netloc:
                 links.add(absolute_url)
-                self.visit_tracker.add_to_visit(absolute_url)
+                self.visit_tracker.add_page_to_visit(absolute_url)
         return links
 
     def on_success(self, url):
         """Callback for when a job succeeds"""
-        self.cache.update_status(url, "parsed")
+        self.crawl_tracker.update_status(url, "parsed")
 
     def on_failure(self, url):
         """Callback for when a job fails"""
-        data = self.cache.update_status(url, "error")
+        data = self.crawl_tracker.update_status(url, "error")
         self.db_manager.store_url(data, self.manager.run_id, self.manager.seed_url)
 
     # Crawling Logic

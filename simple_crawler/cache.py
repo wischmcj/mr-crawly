@@ -157,13 +157,14 @@ class VisitTracker:
 
     def get_page_to_visit(self) -> list[str]:
         """Get all frontier seeds for a URL"""
-        return self.rdb.lpop("to_visit")
+        url = self.rdb.lpop("to_visit")
+        if url is not None:
+            url = url.decode("utf-8")
+        return url
 
     def add_page_to_visit(self, url: str) -> None:
         """Add a frontier URL to the visit queue"""
-        channel = "to_visit"
-        # self.rdb.lpush(f"to_visit", url)
-        self.rdb.publish(channel, url)
+        self.rdb.lpush("to_visit", url)
 
     def add_page_visited(self, seed: str) -> None:
         """Add a visited seed for a URL"""
@@ -176,5 +177,5 @@ class VisitTracker:
     def is_page_visited(self, url: str) -> bool:
         """Check if a page has been visited"""
         resp = self.rdb.sismember("visited", url)
-        is_member = bool(resp.decode("utf-8"))
+        is_member = bool(resp)
         return is_member
