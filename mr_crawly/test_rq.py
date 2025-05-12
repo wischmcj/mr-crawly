@@ -1,53 +1,84 @@
 from __future__ import annotations
-
+from abc import abstractmethod
+import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import redis
 from rq import Queue, Worker
 from utils import add
+import logging
+
+# cwd = os.getcwd()
+# loc = os.path.dirname(__file__)
+# print(loc)
+# sys.path.append(loc)
+
+from config.configuration import get_logger
+
+logger = get_logger(__name__)
 
 
-def mycallback(job, connection, result, *args, **kwargs):
-    print(f"Job {job.id} succeeded with result {result}")
-    print(f"returned connection: {connection}")
-    print(f"returned args: {args}")
-    print(f"returned kwargs: {kwargs}")
+class BaseWorkClass(Worker):
+    def __init__(
+            self,
+            *args,
+            worker_class='base',
+            host="localhost",
+            port=7777,
+            burst=False,
+            **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.host = host
+        self.port = port
+        self.work_class = worker_class # I could probably use actual class here ...
+        self.continue_on_failure = False
+
+    # @abstractmethod
+    def on_success(job, connection, result):
+        logger.info(f"download {job.args[0]} succeeded")
+        connection.sadd('success', 'Base')
+        pass
+
+    def on_failure(self, url):
+        """Callback for when a job succeeds"""
+        logger.info(f"{self.work_class} for {url} failed")
+
+    def work(self):
+        super().work()
 
 
-def my_fail_callback(job, connection, result, *args, **kwargs):
-    print(f"Job {job.id} failed with result {result}")
-    print(f"returned connection: {connection}")
-    print(f"returned args: {args}")
-    print(f"returned kwargs: {kwargs}")
+r = redis.Redis(host="localhost", port=7777, decode_responses=False)
 
 
-def start_worker(queue, redis_conn):
-    worker = Worker(connection=redis_conn, queues=[queue.name])
+def start_worker(queue_name, redis_conn):
+    worker = BaseWorkClass(connection=redis_conn, queues=[queue_name],  burst=True)
     worker.work()
 
 
-def _start_workers(queue, redis_conn):
+def start_workers(redis_conn, queue_name = 'test'):
     """
     Start rq workers for each queue.
     Workers can be accessed via our redis connection object, so
     we don't save pointers to the workers in the manager.
     """
+    # q = Queue(connection=redis_conn, name=name)
+    logger.info(f"Starting worker {queue_name}")
     executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(start_worker, queue, redis_conn)
+    executor.submit(start_worker, queue_name, redis_conn)
+    # start_worker(queue_name, redis_conn,burst=True)
 
 
 def main():
-    r = redis.Redis(host="localhost", port=7777, decode_responses=False)
     q = Queue(connection=r, name="test")
-    q.enqueue(add, args=(1, 2), on_success=mycallback, on_failure=my_fail_callback)
+    q.enqueue(add, args=(1, 2, 3), on_success=BaseWorkClass.on_success)
     print(q.jobs)
-    i = 0
-    while i <= 10:
-        _start_workers(q, r)
-        i += 1
-        time.sleep(1)
-        print(f"Waiting for job to finish {i}")
+    start_workers(r)
+    # _start_workers(q, r)
+    time.sleep(10)
+    breakpoint()
 
 
 if __name__ == "__main__":
