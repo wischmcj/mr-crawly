@@ -10,6 +10,7 @@ from config.configuration import get_logger
 # from manager import Manager
 from downloader import SiteDownloader
 from manager import Manager
+from mapper import SiteMapper
 
 logger = get_logger("crawler")
 
@@ -18,95 +19,140 @@ rdb = redis.Redis(host="localhost", port=7777)
 manager = Manager(host="localhost", port=7777, db_file="sqlite.db", rdb_file="data.rdb")
 
 
-async def process_url_while_true(url: str, retries: int, max_pages: int):
+async def prime_queue(seed_url: str):
+    # Check to see if we can get a sitemap
+    mapper = SiteMapper(manager=manager, seed_url=seed_url)
+    try:
+        sitemap_url, sitemap_indexes, sitemap_details = mapper.get_sitemap()
+    except Exception as e:
+        logger.error(f"Error getting sitemap for {seed_url}: {e}")
+        manager.visit_tracker.add_page_to_visit(seed_url)
+
+
+async def process_url_while_true(
+    url: str, retries: int, write_to_db: bool = True, check_every: float = 0.5
+):
     parse_queue = Queue(20)
-    manager.visit_tracker.add_page_to_visit(url)
+    await prime_queue(url)
     print(f"Added {url} to visit tracker")
     download_producer = asyncio.create_task(
-        download_url_while_true(parse_queue, url, retries, max_pages)
+        download_url_while_true(parse_queue, retries, write_to_db, check_every)
     )
-    parsed_results = parse_while_true(parse_queue)
+    parsed_results = parse_while_true(parse_queue, write_to_db, check_every)
     all_links = await asyncio.gather(download_producer, parsed_results)
     logger.info(f"Completed processing {url}")
     return all_links
 
 
 async def download_url_while_true(
-    parse_queue: Queue, url: str, retries: int, max_pages
+    parse_queue: Queue, retries: int, write_to_db: bool = True, check_every: float = 0.5
 ):
     """
     Periodically check the queue for new items requested for download.
     If there are new items, download them and add them to the queue.
-    If there are no new items, sleep for a short period of time and check again.
     """
-    downloader = SiteDownloader(manager)
-    check_every = 0.2
+    downloader = SiteDownloader(manager, write_to_db)
     empty_count = 0
     max_empty_count = 25
-    page_count = 0
-    while True and empty_count <= max_empty_count and page_count < max_pages:
-        url = manager.visit_tracker.get_page_to_visit()
-        if url is not None:
-            if not manager.visit_tracker.is_page_visited(url):
-                try_num = 0
-                print(f"Content received for {url} ")
-                while try_num <= retries:
+    while True and empty_count <= max_empty_count:
+        try:
+            url = manager.visit_tracker.get_page_to_visit()
+            for _ in range(retries):
+                if url is not None:
+                    print(f"Download request received for {url} ...")
+                    content = None
                     try:
                         manager.visit_tracker.add_page_visited(url)
                         content, status = downloader.get_page_elements(url)
-                        await parse_queue.put((url, content))
-                        try_num = retries + 1
-                        page_count += 1
                     except Exception as e:
                         logger.error(f"Error downloading page {url}: {e}")
-                        if "429" in str(e):  # too many requests
+                        if "429" in str(e):
+                            logger.info(
+                                f"429 error,sleeping then increasing check_every to {check_every*1.5}"
+                            )
+                            check_every = check_every * 1.5
                             await asyncio.sleep(10)
-                        else:
-                            try_num += 1
-                        # on_download_failure(url)
-        else:
-            empty_count += 1
-        await asyncio.sleep(check_every)
-    if page_count >= max_pages:
-        logger.info(f"Maximum number of pages reached: {max_pages}")
+                    if content is not None:
+                        await asyncio.wait_for(
+                            parse_queue.put((url, content)), timeout=1
+                        )
+                    print("try loop exit")
+                else:
+                    empty_count += 1
+            await asyncio.sleep(check_every)
+        except asyncio.TimeoutError:
+            logger.info("Timeout error")
+            break
     if empty_count >= max_empty_count:
         logger.info(f"Queue empty for {max_empty_count} consecutive checks")
     logger.info(f"Completed processing {url}")
     return
 
 
-async def parse_while_true(parse_queue: Queue):
+async def parse_while_true(
+    parse_queue: Queue, write_to_db: bool = True, check_every: float = 0.5
+):
     """
     Parse the content of a page, extract urls.
     Pass extracted links back into queue for download
     """
     links = []
-    parser = Parser(manager)
-    while True:
-        url, content = await parse_queue.get()
-        print(f"Content received for {url} ")
-        link_list = parser.get_links_from_content(url, content)  # .get_links(content)
-        for link in link_list:
-            links.append(link)
-            print(f"{url=}, {link=}")
+    parser = Parser(manager, write_to_db)
+    empty_count = 0
+    max_empty_count = 25
+    while True and empty_count <= max_empty_count:
+        if not parse_queue.empty():
+            empty_count = 0
+            url, content = await asyncio.wait_for(parse_queue.get(), timeout=1)
+            print(f"Content received for {url}, parsing...")
+            link_list = parser.parse(url, content)  # .get_links(content)
+            for link in link_list:
+                logger.info(f"Found {len(link_list)} links in {url}")
+                links.append(link)
+            if len(links) == 0:
+                print(f"No links found for {url}")
+            parse_queue.task_done()
+        else:
+            empty_count += 1
+        await asyncio.sleep(check_every)
 
-        parse_queue.task_done()
+    if empty_count >= max_empty_count:
+        logger.info(f"Queue empty for {max_empty_count} consecutive checks")
+    logger.info("Completed parsing")
+    return links
 
 
-def crawl(seed_url: str, max_pages: int, retries: int):
+def crawl(
+    seed_url: str,
+    max_pages: int,
+    retries: int,
+    write_to_db: bool = True,
+    check_every: float = 0.5,
+):
     # main()
     atexit.register(manager.shutdown)
-    manager.seed_url = seed_url
-    manager.max_pages = max_pages
+    manager.set_seed_url(seed_url)
+    manager.set_max_pages(max_pages)
     manager.retries = retries
     manager.db_manager.start_run(manager.run_id, seed_url, max_pages)
     print(f"Starting crawl for {seed_url}")
     links = asyncio.run(
-        process_url_while_true(url=seed_url, retries=retries, max_pages=max_pages)
+        process_url_while_true(
+            url=seed_url,
+            retries=retries,
+            write_to_db=write_to_db,
+            check_every=check_every,
+        )
     )
-
-    print(links)
+    breakpoint()
+    return links
 
 
 if __name__ == "__main__":
-    crawl(seed_url="https://overstory.com", max_pages=10, retries=3)
+    crawl(
+        seed_url="https://www.overstory.com",
+        max_pages=200,
+        retries=1,
+        write_to_db=True,
+        check_every=0.2,
+    )
