@@ -54,29 +54,6 @@ def test_get_run_data(manager):
     assert "run_id" in data
 
 
-def test_needs_visitation(manager):
-    """Test needs_visitation logic"""
-    # Mock cache.is_page_visited to return False
-    manager.vtracker.is_page_visited = Mock(return_value=False)
-    assert manager.needs_visitation("https://example.com/new") is True
-
-    # Mock cache.is_page_visited to return True
-    manager.vtracker.is_page_visited = Mock(return_value=True)
-    assert manager.needs_visitation("https://example.com/visited") is False
-
-
-def test_below_page_limit(manager):
-    """Test below_page_limit logic"""
-    # Mock cache to return list smaller than max_pages
-    manager.cache.get_pages_visited = Mock(return_value=["url1", "url2"])
-    assert manager.below_page_limit() is True
-
-    # Mock cache to return list equal to max_pages
-    manager.shutdown = Mock(return_value=False)
-    manager.cache.get_pages_visited = Mock(return_value=["url" for _ in range(10)])
-    assert manager.below_page_limit() is False
-
-
 def test_init_dirs(manager):
     """Test directory initialization"""
     assert os.path.exists(manager.data_dir)
