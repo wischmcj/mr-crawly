@@ -32,10 +32,14 @@ class Manager:
         debug: bool = False,
         db_file="sqlite.db",
         rdb_file="data.rdb",
+        run_id=None,
     ):
-        formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-        print("Formatted datetime:", formatted_datetime)
-        self.run_id = formatted_datetime
+        if run_id is None:
+            formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+            print("Formatted datetime:", formatted_datetime)
+            self.run_id = formatted_datetime
+        else:
+            self.run_id = run_id
         logger.info(f"Initializing Manager for run_id {self.run_id}")
         self.seed_url = seed_url
         self.max_pages = max_pages
