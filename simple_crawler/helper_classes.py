@@ -5,7 +5,9 @@ from abc import abstractmethod
 
 from config.configuration import get_logger
 
-logger = get_logger("scheduler")
+# currently no used, but its nice to have
+# for debugging
+logger = get_logger("helper_classes")
 
 
 class BaseListener:

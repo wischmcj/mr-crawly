@@ -8,7 +8,8 @@ from manager import Manager
 
 # from utils import BaseWorkClass
 
-
+# this is essentially the same as the
+# parser, so we dont assign a specific logger
 logger = get_logger("parser")
 
 

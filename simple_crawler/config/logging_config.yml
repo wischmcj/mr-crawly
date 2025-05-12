@@ -29,6 +29,11 @@ loggers:
         handlers: [console]
         propagate: no
 
+    data:
+        level: DEBUG
+        handlers: [console]
+        propagate: no
+
     parser:
         level: DEBUG
         handlers: [console]

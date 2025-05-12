@@ -18,7 +18,7 @@ sys.path.append(loc)
 from cache import CrawlTracker, URLCache, VisitTracker  # noqa
 from config.configuration import get_logger  # noqa
 
-logger = get_logger(__name__)
+logger = get_logger("main")
 
 
 class Manager:

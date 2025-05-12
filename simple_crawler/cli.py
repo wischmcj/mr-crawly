@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 
 from config.logging_config import get_logger
 
@@ -9,7 +8,7 @@ from simple_crawler.main import crawl
 
 
 def main():
-    logger = get_logger("crawler")
+    logger = get_logger("main")
     logger.info("Starting crawler")
     parser = argparse.ArgumentParser(description="Basic Web Crawler")
     parser.add_argument("url", help="Starting URL to crawl")
@@ -31,10 +30,8 @@ def main():
 
     args = parser.parse_args()
 
-    links = asyncio.run(
-        crawl(
-            args.url, args.max_pages, args.retries, args.write_to_db, args.check_every
-        )
+    links = crawl(
+        args.url, args.max_pages, args.retries, args.write_to_db, args.check_every
     )
     for link in links:
         print(link)

@@ -54,24 +54,27 @@ async def download_url_while_true(
     downloader = SiteDownloader(manager, write_to_db)
     empty_count = 0
     max_empty_count = 25
+    # Continue querying cache for new items
+    # Stop when 25 cycle have passed without finding any new items
     while True and empty_count <= max_empty_count:
         try:
+            # Check redis list for new pages needing to be visited
             url = manager.visit_tracker.get_page_to_visit()
             for _ in range(retries):
                 if url is not None:
                     print(f"Download request received for {url} ...")
                     content = None
                     try:
-                        manager.visit_tracker.add_page_visited(url)
                         content, status = downloader.get_page_elements(url)
                     except Exception as e:
                         logger.error(f"Error downloading page {url}: {e}")
                         if "429" in str(e):
                             logger.info(
-                                f"429 error,sleeping then increasing check_every to {check_every*1.5}"
+                                f"429 error, sleeping then increasing check_every to {check_every*1.5}"
                             )
                             check_every = check_every * 1.5
                             await asyncio.sleep(10)
+                    manager.visit_tracker.add_page_visited(url)
                     if content is not None:
                         await asyncio.wait_for(
                             parse_queue.put((url, content)), timeout=1
@@ -100,12 +103,15 @@ async def parse_while_true(
     parser = Parser(manager, write_to_db)
     empty_count = 0
     max_empty_count = 25
+    # Continue parsing until 25 cycle have passed without finding any new items
+    # More likely, the max page limit will be reached first, causing the downloader
+    # to exit
     while True and empty_count <= max_empty_count:
         if not parse_queue.empty():
             empty_count = 0
             url, content = await asyncio.wait_for(parse_queue.get(), timeout=1)
             print(f"Content received for {url}, parsing...")
-            link_list = parser.parse(url, content)  # .get_links(content)
+            link_list = parser.parse(url, content)
             for link in link_list:
                 logger.info(f"Found {len(link_list)} links in {url}")
                 links.append(link)
