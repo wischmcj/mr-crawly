@@ -18,6 +18,7 @@ class CrawlStatus(Enum):
     DB = "db"
     ERROR = "error"
     CLOSED = "closed"
+    DISALLOWED = "disallowed"
 
 
 class UrlAttributes(Enum):
@@ -100,13 +101,16 @@ class CrawlTracker:
         elif status == "db":
             status = CrawlStatus.CLOSED.value
             self.close_url(url)
-        elif status == "error":
-            logger.error(f"Error processing {url}, closing url...")
-            status = CrawlStatus.ERROR.value
+        elif status == "error" or status == "disallowed":
+            if status == "disallowed":
+                status = CrawlStatus.DISALLOWED.value
+            if status == "error":
+                logger.error(f"Error processing {url}, closing url...")
+                status = CrawlStatus.ERROR.value
             # close the url, return the data to be stored in the db
             data = self.close_url(url)
             if data:
-                data["crawl_status"] = CrawlStatus.ERROR.value
+                data["crawl_status"] = status
             return data
         self.rdb.hset(url, "crawl_status", status)
         return {}
