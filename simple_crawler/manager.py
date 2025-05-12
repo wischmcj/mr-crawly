@@ -76,13 +76,25 @@ class Manager:
 
     def _init_cache(self):
         self.cache = URLCache(self.rdb)
-        self.crawl_tracker = CrawlTracker(self.rdb)
-        self.visit_tracker = VisitTracker(self.rdb)
+        self.crawl_tracker = CrawlTracker(
+            self.rdb, seed_url=self.seed_url, run_id=self.run_id
+        )
+        self.visit_tracker = VisitTracker(self.rdb, max_pages=self.max_pages)
 
     def shutdown(self):
         """Shutdown the manager"""
         self.db_manager.complete_run(self.run_id)
+        self.db_manager.flush_urls()
+        self.rdb.flushdb()
         self.rdb.close()
+
+    def set_seed_url(self, seed_url: str):
+        self.seed_url = seed_url
+        self.crawl_tracker.seed_url = seed_url
+
+    def set_max_pages(self, max_pages: int):
+        self.max_pages = max_pages
+        self.visit_tracker.max_pages = max_pages
 
     def _flush_db(self):
         """Flush the database"""
