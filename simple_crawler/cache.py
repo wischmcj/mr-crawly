@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
 
@@ -47,73 +48,52 @@ class URLData:
 class CrawlTracker:
     """Track the status of a URL"""
 
-    def __init__(self, redis_conn: redis.Redis):
+    def __init__(self, redis_conn: redis.Redis, seed_url: str, run_id: str):
         self.rdb = redis_conn
+        self.seed_url = seed_url
+        self.run_id = run_id
+        self.urls = defaultdict(dict)
 
-    def set_url_data(self, url: str, data: dict) -> None:
-        self.rdb.hset(url, mapping=data)
+    def update_links(self, parent_url: str, links: list[str]) -> None:
+        """Update the parent URL for a URL"""
+        for url in links:
+            url_data = self.urls.get(url, {})
+            url_data["parent_url"] = parent_url
+            self.urls[url] = url_data
 
-    def get_url_data(self, url: str):
-        data = self.rdb.hgetall(url)
-        data = {k.decode("utf-8"): v.decode("utf-8") for k, v in data.items()}
-        return data
-
-    def update_url_data(self, url: str, data: dict) -> None:
-        self.rdb.hset(url, mapping=data)
-
-    def get_all_url(self, url: str) -> dict:
-        """Get all cached URL data"""
-        all_data = self.rdb.hgetall(url)
-        results = {}
-
-        for key, value in all_data.items():
-            try:
-                key = key.decode("utf-8")
-                value = value.decode("utf-8")
-            except Exception:
-                logger.warning(f"Failed to decode key: {key} or value: {value}")
-                pass
-            results[key] = value
-            # results["status"] = CrawlStatus(results["status"])
-        # ensures attrs match URLData, thus the db can store it
-        return results
-
-    def close_url(self, url: str) -> None:
-        """Close a URL"""
-        data = self.get_all_url(url)
-        if data:
-            self.rdb.delete(url)
-            if data["crawl_status"] != CrawlStatus.ERROR.value:
-                data["crawl_status"] = CrawlStatus.CLOSED.value
-        return data
-
-    def update_status(self, url: str, status: str) -> None:
+    def update_status(self, url: str, status: str, status_code: int = None) -> None:
         """
         Progresses the status of the URL through the crawl pipeline.
         If and error state is passed, the url is closed and removed from the cache.
         """
-        if status == "map_site":
-            status = CrawlStatus.FRONTIER.value
-        elif status == "download":
-            status = CrawlStatus.PARSE.value
-        elif status == "parse":
-            status = CrawlStatus.DB.value
-        elif status == "db":
-            status = CrawlStatus.CLOSED.value
-            self.close_url(url)
+        if status in ("error", "disallowed", "parse"):
+            url_data = self.urls.pop(url, {})
+        else:
+            url_data = self.urls.get(url, {})
+
+        if url_data.get("seed_url") != self.seed_url:
+            url_data["seed_url"] = self.seed_url
+        if url_data.get("run_id") != self.run_id:
+            url_data["run_id"] = self.run_id
+        if url_data.get("crawl_status") != "started":
+            url_data["crawl_status"] = "started"
+        if url_data.get("url") != url:
+            url_data["url"] = url
+
+        if status_code:
+            url_data["req_status"] = status_code
+
+        if status == "downloaded":
+            url_data["crawl_status"] = "parse"
+        elif status == "parsed":
+            url_data["crawl_status"] = "Finished"
+            return url_data
         elif status == "error" or status == "disallowed":
-            if status == "disallowed":
-                status = CrawlStatus.DISALLOWED.value
-            if status == "error":
-                logger.error(f"Error processing {url}, closing url...")
-                status = CrawlStatus.ERROR.value
-            # close the url, return the data to be stored in the db
-            data = self.close_url(url)
-            if data:
-                data["crawl_status"] = status
-            return data
-        self.rdb.hset(url, "crawl_status", status)
-        return {}
+            url_data["crawl_status"] = status
+            return url_data
+        url_data["crawl_status"] = status
+        self.urls[url] = url_data
+        return url_data
 
 
 class URLCache:
@@ -150,32 +130,41 @@ class URLCache:
 
 
 class VisitTracker:
-    def __init__(self, redis_conn: redis.Redis):
+    def __init__(self, redis_conn: redis.Redis, max_pages: int):
         self.rdb = redis_conn
         self.visited_urls = set()
-        self.to_visit = set()
+        self.page_count = 0
+        self.max_pages = max_pages
+        # self.to_visit = set()
 
     def get_page_to_visit(self) -> list[str]:
         """Get all frontier seeds for a URL"""
+        if self.page_count > self.max_pages:
+            return None
         url = self.rdb.lpop("to_visit")
         if url is not None:
             url = url.decode("utf-8")
+        logger.debug(f"Popped {url} from to_visit")
+        self.page_count += 1
         return url
 
     def add_page_to_visit(self, url: str) -> None:
         """Add a frontier URL to the visit queue"""
-        self.rdb.lpush("to_visit", url)
+        # self.to_visit.add(url)
+        if self.page_count > self.max_pages:
+            logger.warning(f"Max pages reached: {self.page_count}")
+            return None
+        else:
+            if url not in self.visited_urls:
+                self.rdb.lpush("to_visit", url)
+            logger.info(f"Added {url} to to_visit")
 
-    def add_page_visited(self, seed: str) -> None:
+    def add_page_visited(self, url: str) -> None:
         """Add a visited seed for a URL"""
-        self.rdb.sadd("visited", seed)
+        self.visited_urls.add(url)
+        self.rdb.sadd("visited", url)
+        logger.info(f"Added {url} to visited")
 
     def get_pages_visited(self) -> list[str]:
         """Get all frontier seeds for a URL"""
         return self.rdb.smembers("visited")
-
-    def is_page_visited(self, url: str) -> bool:
-        """Check if a page has been visited"""
-        resp = self.rdb.sismember("visited", url)
-        is_member = bool(resp)
-        return is_member
