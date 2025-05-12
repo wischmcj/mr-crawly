@@ -4,7 +4,6 @@ import sqlite3
 import time
 from dataclasses import dataclass
 
-from cache import URLData
 from config.configuration import get_logger
 
 logger = get_logger(__name__)
@@ -15,19 +14,20 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_file)
         self.db_file = db_file
         self._init_db()
+        self.channel = "db"
+        self.urls_to_write = []
+        self.write_every = 10
 
     def _init_db(self):
         # Initialize databases
         self.run_db = RunTable(self.conn)
         self.url_db = UrlTable(self.conn)
-        self.links_db = LinksTable(self.conn)
         self.sitemap_table = SitemapTable(self.conn)
         self.create_tables()
 
     def create_tables(self) -> None:
         """Create all database tables"""
         self.url_db.create_table()
-        self.links_db.create_table()
         self.sitemap_table.create_table()
         self.run_db.create_table()
 
@@ -35,13 +35,22 @@ class DatabaseManager:
         """Start a new crawl run"""
         return self.run_db.start_run(run_id, seed_url, max_pages)
 
-    def complete_run(self, run_id: str, status: str = "completed") -> None:
+    def complete_run(self, run_id: str) -> None:
         """Complete a crawl run"""
-        self.run_db.complete_run(run_id, status)
+        self.run_db.complete_run(run_id)
 
-    def store_url(self, url_data: URLData, run_id: str, parent_url: str = None) -> None:
+    def store_url(self, url_data: dict) -> None:
         """Store URL data in database"""
-        self.url_db.store_url(url_data, run_id, parent_url)
+        self.urls_to_write.append(url_data)
+        logger.info(f"Currently {len(self.urls_to_write)} urls to write")
+        if len(self.urls_to_write) > self.write_every:
+            self.url_db.store_urls(self.urls_to_write)
+            self.urls_to_write = []
+
+    def flush_urls(self) -> None:
+        """Flush the URLs to the database"""
+        self.url_db.store_urls(self.urls_to_write)
+        self.urls_to_write = []
 
     def store_links(
         self, seed_url: str, parent_url: str, linked_urls: list[str]
@@ -61,14 +70,6 @@ class DatabaseManager:
         """Get all URL records for a given run ID"""
         return self.url_db.get_urls_for_run(run_id)
 
-    def get_links_for_seed_url(self, seed_url: str) -> list[tuple]:
-        """Get all link records for a given seed URL"""
-        return self.links_db.get_links_for_seed_url(seed_url)
-
-    def get_links_for_parent_url(self, parent_url: str) -> list[tuple]:
-        """Get all link records for a given parent URL"""
-        return self.links_db.get_links_for_parent_url(parent_url)
-
     def get_sitemaps_for_seed_url(self, seed_url: str) -> list[dict]:
         """Get all sitemap records for a given seed URL"""
         return self.sitemap_table.get_sitemaps_for_seed_url(seed_url)
@@ -78,7 +79,6 @@ class BaseTable:
     def __init__(self, conn, table_name: str = ""):
         self.conn = conn
         self.cursor = self.conn.cursor()
-        self.logger = get_logger(__name__)
         self.table_name = table_name
         self.columns = []
         self.types = []
@@ -114,14 +114,14 @@ class BaseTable:
 
     def execute_query(self, query: str, params: tuple = ()):
         """Execute a query"""
-        self.logger.info(f"Executing query: {query}")
+        logger.info(f"Executing query: {query}")
         for i in range(3):
             try:
                 self.cursor.execute(query, params)
                 self.conn.commit()
                 return True
             except sqlite3.OperationalError as e:
-                self.logger.error(f"Integrity error: {e}")
+                logger.error(f"Integrity error: {e}")
                 self.conn.rollback()
                 time.sleep(1)
         return False
@@ -166,14 +166,14 @@ class RunTable(BaseTable):
         )
         return self.cursor.lastrowid
 
-    def complete_run(self, run_id: str, status: str = "completed"):
+    def complete_run(self, run_id: str):
         """Mark a run as completed and set end time"""
+        print(f"Completing run {run_id}")
         res = self.execute_query(
             """UPDATE runs SET
-                            end_time = datetime('now'),
-                            status = ?
+                            end_time = datetime('now')
                             WHERE run_id = ?;""",
-            (run_id, status),
+            (run_id,),
         )
         return res
 
@@ -185,32 +185,28 @@ class UrlTable(BaseTable):
         self.columns = [
             "id",
             "seed_url",
-            "parent_url",
             "url",
             "content",
             "req_status",
             "crawl_status",
             "run_id",
-            "links",
         ]
         self.types = [
             "INTEGER",
             "TEXT",
             "TEXT",
-            "TEXT",
             "BLOB",
             "TEXT",
-            "INTEGER",
-            "INTEGER",
+            "TEXT",
             "TEXT",
         ]
         self.primary_key = "id"
-        self.unique_keys = ["id", "url"]
+        self.unique_keys = ["id"]
 
     def get_urls_for_run(self, run_id: str) -> list[dict]:
         """Get all URL records for a given run ID"""
         res = self.execute_query(
-            """SELECT id, seed_url, parent_url, url, content, req_status, crawl_status, run_id, links
+            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id
                FROM urls
                WHERE run_id = ?""",
             (run_id,),
@@ -224,7 +220,7 @@ class UrlTable(BaseTable):
     def get_urls_for_seed_url(self, seed_url: str) -> list[dict]:
         """Get all URL records for a given seed URL"""
         res = self.execute_query(
-            """SELECT id, seed_url, parent_url, url, content, req_status, crawl_status, run_id, links
+            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id
                FROM urls
                WHERE seed_url = ?""",
             (seed_url,),
@@ -235,81 +231,35 @@ class UrlTable(BaseTable):
         else:
             raise Exception("Failed to get URLs for seed URL")
 
-    def store_url(self, url_data: dict, run_id: str, seed_url: str):
+    def store_urls(self, url_data: list[dict]):
         """Store URL and its HTML content"""
-        url = url_data["url"]
-        content = url_data["content"]
-        req_status = url_data["req_status"]
-        crawl_status = url_data["crawl_status"]
-        parent_url = url_data["parent_url"]
-        try:
-            res = self.execute_query(
-                "INSERT INTO urls (seed_url, parent_url, url, content, req_status, crawl_status, run_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (seed_url, parent_url, url, content, req_status, crawl_status, run_id),
+        print("storing urls", url_data)
+        to_write = []
+        if len(url_data) > 0:
+            for row in url_data:
+                url = row.get("url", "")
+                content = row.get("content", "")
+                req_status = row.get("req_status", "")
+                crawl_status = row.get("crawl_status", "")
+                seed_url = row.get("seed_url", "")
+                run_id = row.get("run_id", "")
+                to_write.append(
+                    [seed_url, url, content, req_status, crawl_status, run_id]
+                )
+            insert_query = "INSERT INTO urls (seed_url, url, content, req_status, crawl_status, run_id) VALUES "
+            val_lists = [
+                "','".join([str(x) if x else "" for x in row]) for row in to_write
+            ]
+            vals = ",".join(f"('{val_list}')" for val_list in val_lists)
+            query = insert_query + vals
+            print("running query", query)
+            _ = self.execute_query(
+                query,
             )
-        except sqlite3.IntegrityError:
-            # Update if entry already exists
-            self.execute_query(
-                "UPDATE urls SET content = ?, req_status = ?, crawl_status = ? WHERE url = ? AND run_id = ?",
-                (content, req_status, crawl_status, url, run_id),
-            )
-        if res:
             return self.cursor.lastrowid
         else:
-            raise Exception("Failed to store URL")
-
-
-class LinksTable(BaseTable):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.table_name = "links"
-        self.columns = ["id", "seed_url", "parent_url", "linked_url"]
-        self.types = ["INTEGER", "TEXT", "TEXT", "TEXT"]
-        self.primary_key = "id"
-
-    def get_links_for_seed_url(self, seed_url: str) -> list[tuple]:
-        """Get all link records where this URL is the source"""
-        res = self.execute_query(
-            """SELECT seed_url, parent_url, linked_url
-               FROM links
-               WHERE seed_url = ?""",
-            (seed_url,),
-        )
-        if res:
-            return self.cursor.fetchall()
-        else:
-            raise Exception("Failed to get links for seed URL")
-
-    def get_links_for_parent_url(self, parent_url: str) -> list[tuple]:
-        """Get all link records where this URL is the source"""
-        res = self.execute_query(
-            """SELECT parent_url, linked_url
-               FROM links
-               WHERE parent_url = ?""",
-            (parent_url,),
-        )
-        if res:
-            return self.cursor.fetchall()
-        else:
-            raise Exception("Failed to get links for parent URL")
-
-    def store_links(self, seed_url: str, parent_url: str, linked_urls: list[str]):
-        """Store multiple links from a source URL"""
-        try:
-            # Create list of tuples for executemany
-            links_data = list(
-                tuple((seed_url, parent_url, linked_url)) for linked_url in linked_urls
-            )
-
-            self.conn.executemany(
-                """INSERT INTO links (seed_url, parent_url, linked_url)
-                   VALUES (?, ?, ?)""",
-                links_data,
-            )
-            self.conn.commit()
-        except sqlite3.IntegrityError:
-            # Log error but continue - some duplicates are expected
-            pass
+            logger.info("No URLs to store")
+            return None
 
 
 class SitemapTable(BaseTable):
@@ -375,8 +325,10 @@ class SitemapTable(BaseTable):
         else:
             raise Exception("Failed to get sitemaps for seed URL")
 
-    def store_sitemap_data(self, sitemap_details: dict):
+    def store_sitemap_data(self, sitemap_details: dict, run_id: str, seed_url: str):
         """Store sitemap metadata"""
+        sitemap_details["run_id"] = run_id
+        sitemap_details["seed_url"] = seed_url
         try:
             self.conn.execute(
                 """

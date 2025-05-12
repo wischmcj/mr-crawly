@@ -13,13 +13,14 @@ logger = get_logger("parser")
 
 
 class Parser:
-    def __init__(self, manager: Manager, url: str = None):
+    def __init__(self, manager: Manager, write_to_db: bool = True, url: str = None):
         self.url = url
         self.manager = manager
         self.cache = manager.cache
         self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
         self.crawl_tracker = manager.crawl_tracker
+        self.write_to_db = write_to_db
 
     def get_links_from_content(self, url: str, content: str) -> set[str]:
         """Extract all links from a webpage"""
@@ -42,30 +43,29 @@ class Parser:
                 self.visit_tracker.add_page_to_visit(absolute_url)
         return links
 
-    def on_success(self, url):
+    def on_success(self, url, links):
         """Callback for when a job succeeds"""
-        self.crawl_tracker.update_status(url, "parsed")
+        data = self.crawl_tracker.update_status(url, "parsed")
+        self.crawl_tracker.update_links(url, links)
+        if self.write_to_db:
+            self.db_manager.store_url(data)
 
     def on_failure(self, url):
         """Callback for when a job fails"""
         data = self.crawl_tracker.update_status(url, "error")
-        self.db_manager.store_url(data, self.manager.run_id, self.manager.seed_url)
+        if self.write_to_db:
+            self.db_manager.store_url(data)
 
     # Crawling Logic
     def parse(self, url, content):
         """Main crawling method"""
-        logger.info(f"Crawling: {url}")
+        links = set()
+        logger.info(f"Parsing {url}")
         try:
-            self.get_links_from_content(url, content)
-            self.on_success(url)
+            links = self.get_links_from_content(url, content)
+            logger.error(f"Found {len(links)} links in {url}")
+            self.on_success(url, list(links))
         except Exception as e:
             logger.error(f"Error parsing {url}: {e}")
             self.on_failure(url)
-
-
-if __name__ == "__main__":
-    manager = Manager(
-        host="localhost", port=7777, db_file="test.db", rdb_file="test.rdb"
-    )
-    parser = Parser(manager)
-    parser.parse("https://www.google.com", "https://www.overstory.com")
+        return links

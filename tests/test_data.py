@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from simple_crawler.data import (BaseTable, DatabaseManager, LinksTable, Run,
-                                 RunTable, SitemapTable, UrlTable)
+from simple_crawler.data import (BaseTable, DatabaseManager, Run, RunTable,
+                                 SitemapTable, UrlTable)
 
 
 @pytest.fixture
@@ -53,13 +53,6 @@ def url_table(conn):
 
 
 @pytest.fixture
-def links_table(conn):
-    table = LinksTable(conn)
-    table.create_table()
-    return table
-
-
-@pytest.fixture
 def sitemap_table(conn):
     table = SitemapTable(conn)
     table.create_table()
@@ -74,6 +67,8 @@ def url_data():
         "req_status": "200",
         "crawl_status": "frontier",
         "parent_url": "http://example.com",
+        "seed_url": "http://example.com",
+        "run_id": "1",
     }
 
 
@@ -135,16 +130,14 @@ class TestUrlTable:
 
     def test_store_url(self, url_table, url_data):
         url_table.cursor.execute("DELETE FROM urls")
-        run_id = 1
-        seed_url = "http://example.com"
 
-        url_id = url_table.store_url(url_data, run_id, seed_url)
+        url_id = url_table.store_urls([url_data])
         assert url_id is not None
         # Verify URL was stored
         url_table.cursor.execute("SELECT * FROM urls WHERE id = ?", (url_id,))
         result = url_table.cursor.fetchone()
         assert result is not None
-        assert result[3] == url_data["url"]
+        assert result[1] == url_data["seed_url"]
 
     def test_get_urls_for_seed_url(self, url_table, url_data):
         seed_url = "http://example.com"
@@ -154,7 +147,7 @@ class TestUrlTable:
         assert urls[0]["url"] == url_data["url"]
 
     def test_get_urls_for_run(self, url_table, url_data):
-        run_id = 1
+        run_id = "1"
         urls = url_table.get_urls_for_run(run_id)
         assert len(urls) == 1
         assert urls[0]["url"] == url_data["url"]
@@ -196,50 +189,15 @@ class TestRunTable:
         assert result[0] is not None
 
 
-class TestLinksTable:
-    def teardown(self):
-        links_table.cursor.execute("DELETE FROM links")
-
-    def test_store_links(self, links_table):
-        links_table.cursor.execute("DELETE FROM links")
-        seed_url = "http://example.com"
-        parent_url = "http://example.com/parent"
-        linked_urls = ["http://example.com/page1", "http://example.com/page2"]
-
-        links_table.store_links(seed_url, parent_url, linked_urls)
-
-        # Verify links were stored
-        links_table.cursor.execute(
-            "SELECT * FROM links WHERE seed_url = ? AND parent_url = ?",
-            (seed_url, parent_url),
-        )
-        results = links_table.cursor.fetchall()
-        assert len(results) == 2
-        stored_urls = [r[3] for r in results]
-        assert all(url in stored_urls for url in linked_urls)
-
-    def test_get_links_for_seed_url(self, links_table):
-        seed_url = "http://example.com"
-
-        links = links_table.get_links_for_seed_url(seed_url)
-        assert len(links) == 2
-        assert all([link[0] == seed_url for link in links])
-
-    def test_get_links_for_parent_url(self, links_table):
-        parent_url = "http://example.com/parent"
-
-        links = links_table.get_links_for_parent_url(parent_url)
-        assert len(links) == 2
-        assert all([link[0] == parent_url for link in links])
-
-
 class TestSitemapTable:
     def teardown(self):
         sitemap_table.cursor.execute("DELETE FROM sitemaps")
 
     def test_store_sitemap(self, sitemap_table, sitemap_data):
         sitemap_table.cursor.execute("DELETE FROM sitemaps")
-        sitemap_table.store_sitemap_data(sitemap_data)
+        sitemap_table.store_sitemap_data(
+            sitemap_data, seed_url="http://example.com", run_id="1"
+        )
 
         # Verify sitemap was stored
         sitemap_table.cursor.execute(
@@ -251,7 +209,9 @@ class TestSitemapTable:
 
     def test_get_sitemaps_for_seed_url(self, sitemap_table, sitemap_data):
         sitemap_table.cursor.execute("DELETE FROM sitemaps")
-        sitemap_table.store_sitemap_data(sitemap_data)
+        sitemap_table.store_sitemap_data(
+            sitemap_data, seed_url="http://example.com", run_id="1"
+        )
         seed_url = sitemap_data["seed_url"]
         sitemaps = sitemap_table.get_sitemaps_for_seed_url(seed_url)
         assert len(sitemaps) == 1

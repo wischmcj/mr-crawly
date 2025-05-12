@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 from urllib.parse import urlparse
-from urllib.robotparser import RobotFileParser
 
 import requests
 from config.configuration import get_logger
 from manager import Manager
+from protego import Protego
 
 logger = get_logger("downloader")
 
 
 class SiteDownloader:
-    def __init__(self, manager: Manager):
-        self.robot_parser = RobotFileParser()
+    def __init__(self, manager: Manager, write_to_db: bool = True):
         self.manager = manager
         self.cache = manager.cache
         self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
         self.crawl_tracker = manager.crawl_tracker
+        self.write_to_db = write_to_db
 
     def save_html(self, html: str, filename: str):
         with open(filename, "w", encoding="UTF-8") as f:
@@ -29,9 +29,9 @@ class SiteDownloader:
         parsed_url = urlparse(url)
         robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
         try:
-            self.robot_parser.set_url(robots_url)
-            self.robot_parser.read()
-            return self.robot_parser.can_fetch("*", url) or "sitemap" in url
+            robots_response = requests.get(robots_url)
+            self.rp = Protego.parse(robots_response.text)
+            return self.rp.can_fetch("*", url)
         except Exception as e:
             logger.warning(f"Error checking robots.txt for {url}: {e}")
             return True  # If we can't check robots.txt, we probably want to set a reasonable default
@@ -39,47 +39,44 @@ class SiteDownloader:
     def read_politeness_info(self, url: str):
         parsed_url = urlparse(url)
         robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
-        self.robot_parser.set_url(robots_url)
-        self.robot_parser.read()
-        self.rrate = self.robot_parser.request_rate("*")
-        self.crawl_delay = self.robot_parser.crawl_delay("*")
+        robots_response = requests.get(robots_url)
+        self.rp = Protego.parse(robots_response.text)
+        sitemap_url = self.rp.sitemaps
+        rrate = self.rp.request_rate("*")
+        crawl_delay = self.rp.crawl_delay("*")
+        return sitemap_url, rrate, crawl_delay
 
     def on_success(self, url: str, content: str, status_code: int):
         self.cache.update_content(url, content, status_code)
-        self.crawl_tracker.update_status(url, "downloaded")
+        self.crawl_tracker.update_status(url, "downloaded", status_code)
 
     def on_failure(self, url: str, crawl_status: str, content: str, status_code: int):
         self.cache.update_content(url, content, status_code)
-        data = self.crawl_tracker.update_status(url, crawl_status)
-        self.db_manager.store_url(data, self.manager.run_id, self.manager.seed_url)
+        data = self.crawl_tracker.update_status(url, crawl_status, status_code)
+        if self.write_to_db:
+            self.db_manager.store_url(data)
 
-    def get_page_elements(self, url: str) -> set[str]:
+    def get_page_elements(self, url: str, cache_results: bool = True) -> set[str]:
         """Get the page elements from a webpage"""
-        # Add page to visited tracker
-        self.visit_tracker.add_page_visited(url)
-
-        # Check for an already cached response from previous runs
-        content, status = self.cache.get_cached_response(url)
-        if content is not None:
-            return content, status
 
         # Check if we're allowed to crawl the page
         if not self.can_fetch(url):
             msg = f"Skipping {url} (not allowed by robots.txt)"
             logger.info(msg)
             self.on_failure(url, "disallowed", "", 403)
-            return "", 403
+            return None, 403
 
-        # Get the page elements
-        response = requests.get(url, timeout=10)
-        logger.debug(f"Getting elements for: {url}")
+        # Get the page elementsupdate_statusupdate_status
         try:
+            response = requests.get(url, timeout=1)
             response.raise_for_status()
-            self.on_success(url, response.text, response.status_code)
+            if cache_results:
+                self.on_success(url, response.text, response.status_code)
         except Exception as e:
             # If we can't get the page, we'll return the error
             # and closed the url out, not passing it to the parser
             logger.error(f"Error getting {url}: {e}")
-            self.on_failure(url, "error", response.text, response.status_code)
-            return None, response.status_code
+            if cache_results:
+                self.on_failure(url, "error", response.text, response.status_code)
+            raise e
         return response.text, response.status_code
