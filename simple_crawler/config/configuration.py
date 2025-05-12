@@ -12,14 +12,12 @@ cwd = os.getcwd()
 loc = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(loc)
 # sys.path.append(os.path.dirname(cwd))
-#
 
 config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config/config.toml")
 log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/config/logging_config.yml")
 
 
 def _load_console_log():
-    print("loading log config from", log_config)
     with open(log_config) as f:
         config = yaml.safe_load(f.read())
     logging.config.dictConfig(config)
