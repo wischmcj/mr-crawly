@@ -10,3 +10,6 @@ data/sqlite.db
 unused_code/recursive_sitemaps.py
 unused_code/events_db.py
 */sqlite.db
+*.rdb
+*simple_crawler/data/*
+unused_code/*

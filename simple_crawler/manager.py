@@ -47,7 +47,6 @@ class Manager:
         self._init_dirs()
         self._init_db()
         self._init_cache()
-        self.db_manager.start_run(self.run_id, self.seed_url, self.max_pages)
 
         self.visited_urls = set()
         self.to_visit = set()
@@ -118,6 +117,3 @@ class Manager:
             return False
         else:
             return True
-
-    def crawl():
-        pass
