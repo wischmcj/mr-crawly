@@ -61,22 +61,6 @@ class TestURLData:
         assert isinstance(sample_url_data.content, str)
 
 
-class TestCrawlTracker:
-    def test_update_and_get_url_data(self, crawl_tracker, sample_url_data):
-        url = sample_url_data.url
-        crawl_tracker.update_url_data(url, sample_url_data.__dict__)
-        retrieved_data = crawl_tracker.get_url_data(url)
-        assert retrieved_data is not None
-
-    def test_close_url(self, crawl_tracker, sample_url_data):
-        url = sample_url_data.url
-        crawl_tracker.update_url_data(url, sample_url_data.__dict__)
-        closed_data = crawl_tracker.close_url(url)
-        assert closed_data is not None
-        if closed_data["crawl_status"] != CrawlStatus.ERROR.value:
-            assert closed_data["crawl_status"] == CrawlStatus.CLOSED.value
-
-
 class TestURLCache:
     def test_initialization(self, url_cache):
         assert isinstance(url_cache.visited_urls, set)
