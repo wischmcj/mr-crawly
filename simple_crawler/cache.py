@@ -92,19 +92,24 @@ class CrawlTracker:
         If and error state is passed, the url is closed and removed from the cache.
         """
         if status == "map_site":
-            self.rdb.hset(url, "crawl_status", CrawlStatus.FRONTIER.value)
+            status = CrawlStatus.FRONTIER.value
         elif status == "download":
-            self.rdb.hset(url, "crawl_status", CrawlStatus.PARSE.value)
+            status = CrawlStatus.PARSE.value
         elif status == "parse":
-            self.rdb.hset(url, "crawl_status", CrawlStatus.DB.value)
-        elif status == "db" or status == "error":
-            self.rdb.hset(url, "crawl_status", CrawlStatus.CLOSED.value)
+            status = CrawlStatus.DB.value
+        elif status == "db":
+            status = CrawlStatus.CLOSED.value
             self.close_url(url)
-        else:
-            data = self.get_url_data(url)
+        elif status == "error":
+            logger.error(f"Error processing {url}, closing url...")
+            status = CrawlStatus.ERROR.value
+            # close the url, return the data to be stored in the db
+            data = self.close_url(url)
             if data:
-                data["crawl_status"] = status
-            self.set_url_data(url, data)
+                data["crawl_status"] = CrawlStatus.ERROR.value
+            return data
+        self.rdb.hset(url, "crawl_status", status)
+        return {}
 
 
 class URLCache:
@@ -155,11 +160,9 @@ class VisitTracker:
         channel = "to_visit"
         # self.rdb.lpush(f"to_visit", url)
         self.rdb.publish(channel, url)
-        self.to_visit.add(url)
 
     def add_page_visited(self, seed: str) -> None:
         """Add a visited seed for a URL"""
-        self.visited_urls.add(seed)
         self.rdb.sadd("visited", seed)
 
     def get_pages_visited(self) -> list[str]:
