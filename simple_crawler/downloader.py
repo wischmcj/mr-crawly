@@ -1,45 +1,22 @@
 from __future__ import annotations
 
-import logging
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 
-import redis
 import requests
-from cache import URLCache, VisitTracker
 from config.configuration import get_logger
+from manager import Manager
 
-logger = get_logger(__name__)
+logger = get_logger("downloader")
 
 
 class SiteDownloader:
-    def __init__(
-        self,
-        page_url: str,
-        host="localhost",
-        port=7777,
-        logger=None,
-    ):
-        self.page_url = page_url
+    def __init__(self, manager: Manager):
         self.robot_parser = RobotFileParser()
-        logger = logger
-        if logger is None:
-            logger = logging.getLogger(__name__)
-        self.host = host
-        self.port = port
-        self.results = dict.fromkeys(
-            [
-                "page_url",
-                "robot_parser",
-            ],
-            None,
-        )
-        self.host = host
-        self.port = port
-        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
-        self.tracker = VisitTracker(self.redis_conn)
-        self.cache = URLCache(self.redis_conn)
-        self.work_class = "download"
+        self.manager = manager
+        self.cache = manager.cache
+        self.visit_tracker = manager.visit_tracker
+        self.db_manager = manager.db_manager
 
     def save_html(self, html: str, filename: str):
         with open(filename, "w", encoding="UTF-8") as f:
@@ -66,15 +43,42 @@ class SiteDownloader:
         self.rrate = self.robot_parser.request_rate("*")
         self.crawl_delay = self.robot_parser.crawl_delay("*")
 
+    def on_success(self, url: str, content: str, status_code: int):
+        self.db_manager.update_content(url, content, status_code)
+        self.cache.update_status(url, "downloaded")
+
+    def on_failure(self, url: str, crawl_status: str, content: str, status_code: int):
+        self.db_manager.update_content(url, content, status_code)
+        data = self.cache.update_status(url, crawl_status)
+        self.db_manager.store_url(data, self.manager.run_id, self.manager.seed_url)
+
     def get_page_elements(self, url: str) -> set[str]:
         """Get the page elements from a webpage"""
-        self.tracker.add_page_visited(url)
+        # Add page to visited tracker
+        self.visit_tracker.add_page_visited(url)
+
+        # Check for an already cached response from previous runs
+        content, status = self.cache.get_cached_response(url)
+        if content is not None:
+            return content, status
+
+        # Check if we're allowed to crawl the page
         if not self.can_fetch(url):
             msg = f"Skipping {url} (not allowed by robots.txt)"
             logger.info(msg)
-            raise PermissionError(msg)
+            self.on_failure(url, "disallowed", "", 403)
+            return "", 403
+
+        # Get the page elements
         response = requests.get(url, timeout=10)
         logger.debug(f"Getting elements for: {url}")
-        response.raise_for_status()
-        self.cache.update_content(url, response.text, response.status_code)
+        try:
+            response.raise_for_status()
+            self.on_success(url, response.text, response.status_code)
+        except Exception as e:
+            # If we can't get the page, we'll return the error
+            # and closed the url out, not passing it to the parser
+            logger.error(f"Error getting {url}: {e}")
+            self.on_failure(url, "error", response.text, response.status_code)
+            return None, response.status_code
         return response.text, response.status_code
