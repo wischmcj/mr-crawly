@@ -3,21 +3,27 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+import redis
 
 from simple_crawler.data import (BaseTable, DatabaseManager, Run, RunTable,
-                                 SitemapTable, UrlTable)
+                                 SitemapTable, UrlBulkWriter, UrlTable)
 
 
 @pytest.fixture
-def conn():
-    connection = sqlite3.connect("data/test.db")
+def db_file():
+    return "data/test.db"
+
+
+@pytest.fixture
+def conn(db_file):
+    connection = sqlite3.connect(db_file)
     yield connection
     connection.close()
 
 
 @pytest.fixture
-def db_manager():
-    manager = DatabaseManager(db_file="data/test.db")
+def db_manager(db_file):
+    manager = DatabaseManager(db_file=db_file)
     return manager
 
 
@@ -73,6 +79,17 @@ def url_data():
 
 
 @pytest.fixture
+def incomplete_url_data():
+    return {
+        "seed_url": "https://www.overstory.com",
+        "run_id": "2025_05_12_15_47_34",
+        "crawl_status": "downloaded",
+        "url": "https://www.overstory.com/blog",
+        "req_status": 200,
+    }
+
+
+@pytest.fixture
 def sitemap_data():
     return {
         "run_id": "1",
@@ -85,6 +102,11 @@ def sitemap_data():
         "modified": None,
         "status": "Success",
     }
+
+
+@pytest.fixture
+def redis_conn():
+    return redis.Redis(host="localhost", port=7777, decode_responses=False)
 
 
 class TestBaseTable:
@@ -216,3 +238,46 @@ class TestSitemapTable:
         sitemaps = sitemap_table.get_sitemaps_for_seed_url(seed_url)
         assert len(sitemaps) == 1
         assert sitemaps[0]["url"] == sitemap_data["url"]
+
+
+class MockPubSub:
+    def __init__(self):
+        self.messages = []
+
+    def listen(self):
+        try:
+            return self.messages.pop(0)
+        except IndexError:
+            return []
+
+
+class TestUrlBulkWriter:
+    def test_store_url(self, db_file):
+        pubsub = MockPubSub()
+        writer = UrlBulkWriter(pubsub, db_file, batch_size=2)
+
+        url_data = {"url": "http://example.com", "run_id": "1"}
+        writer.store_url(url_data)
+
+        # First URL should be buffered
+        assert len(writer.urls_to_write) == 1
+        assert writer.urls_to_write[0] == url_data
+
+        # Second URL should trigger flush
+        writer.store_url(url_data)
+        assert len(writer.urls_to_write) == 2
+
+        writer.store_url(url_data)
+        assert len(writer.urls_to_write) == 0  # Should have flushed
+
+    def test_flush(self, db_file):
+        pubsub = MockPubSub()
+        writer = UrlBulkWriter(pubsub, db_file)
+
+        url_data = {"url": "http://example.com", "run_id": "1"}
+        writer.store_url(url_data)
+        writer.store_url(url_data)
+
+        assert len(writer.urls_to_write) == 2
+        writer.flush_urls()
+        assert len(writer.urls_to_write) == 0
