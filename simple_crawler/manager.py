@@ -97,6 +97,7 @@ class Manager:
         logger.info("Shutting down manager")
         self.db_manager.shutdown()
         self.url_pubsub.close()
+        self.save_cache()
 
     def set_seed_url(self, seed_url: str):
         self.seed_url = seed_url
