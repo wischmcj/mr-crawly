@@ -18,12 +18,12 @@ def create_dir(dir_name, exist_ok=False):
     # Method 1: Using os.mkdir() to create a single directory
     try:
         os.mkdir(dir_name)
-        print(f"Directory '{dir_name}' created successfully.")
+        logger.info(f"Directory '{dir_name}' created successfully.")
     except FileExistsError:
         if exist_ok:
-            print(f"Directory '{dir_name}' already exists.")
+            logger.info(f"Directory '{dir_name}' already exists.")
         else:
             raise FileExistsError(f"Directory '{dir_name}' already exists.")
     except PermissionError as err:
-        print(f"Permission denied: Unable to create '{dir_name}'.")
+        logger.info(f"Permission denied: Unable to create '{dir_name}'.")
         raise err

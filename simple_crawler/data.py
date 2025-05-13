@@ -27,7 +27,7 @@ class UrlBulkWriter(BaseListener):
     def store_url(self, url_data: dict) -> None:
         """Store URL data in database"""
         self.urls_to_write.append(url_data)
-        logger.info(f"Currently {len(self.urls_to_write)} urls to write")
+        logger.debug(f"Currently {len(self.urls_to_write)} urls to write")
         if len(self.urls_to_write) > self.batch_size:
             self.url_db.store_urls(self.urls_to_write)
             self.urls_to_write = []
@@ -42,15 +42,15 @@ class UrlBulkWriter(BaseListener):
 
     def flush_urls(self) -> None:
         """Flush the URLs to the database"""
-        logger.info("Flushing URLs to database")
+        logger.debug("Flushing URLs to database")
         self.url_db.store_urls(self.urls_to_write)
         self.urls_to_write = []
-        logger.info("Closing connection to database")
+        logger.debug("Closing connection to database")
 
     def handle_message(self):
         while self.running:
             for message in self.pubsub.listen():
-                logger.info(f"Received message: {message}")
+                logger.debug(f"Received message: {message}")
                 if message["type"] == "message":
                     if message["data"] == b"exit":
                         self.running = False
@@ -85,7 +85,7 @@ class DatabaseManager:
         self.conn.close()
 
     def add_listener(self, pubsub, listener_cls, args=()):
-        print(f"Subscribed to {pubsub}. Waiting for messages...")
+        logger.info(f"Subscribed to {pubsub}. Waiting for messages...")
         handler = listener_cls(pubsub, *args)
         handler.start()
         self.listeners.append(handler)
@@ -146,7 +146,7 @@ class BaseTable:
                                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                                     UNIQUE({unique_cols})
                                 )"""
-        print(create_string)
+        logger.debug(create_string)
         return create_string
 
     def create_table(self):
@@ -157,7 +157,7 @@ class BaseTable:
 
     def execute_query(self, query: str, params: tuple = ()):
         """Execute a query"""
-        logger.info(f"Executing query: {query}")
+        logger.debug(f"Executing query: {query}")
         for i in range(3):
             try:
                 self.cursor.execute(query, params)
@@ -212,7 +212,7 @@ class RunTable(BaseTable):
 
     def complete_run(self, run_id: str):
         """Mark a run as completed and set end time"""
-        print(f"Completing run {run_id}")
+        logger.info(f"Completing run {run_id}")
         res = self.execute_query(
             """UPDATE runs SET
                             end_time = datetime('now')
@@ -307,7 +307,7 @@ class UrlTable(BaseTable):
             ]
             vals = ",".join(f"('{val_list}')" for val_list in val_lists)
             query = insert_query + vals
-            print("running query", query)
+            logger.info("running query", query)
             _ = self.execute_query(
                 query,
             )

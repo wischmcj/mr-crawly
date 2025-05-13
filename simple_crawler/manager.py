@@ -10,15 +10,16 @@ from utils import create_dir
 
 from data import DatabaseManager
 
-cwd = os.getcwd()
 loc = os.path.dirname(__file__)
-print(loc)
 sys.path.append(loc)
 
 from cache import CrawlTracker, URLCache  # noqa
-from config.configuration import get_logger  # noqa
+from config.configuration import REDIS_HOST  # noqa
+from config.configuration import (DATA_DIR, RDB_FILE, REDIS_PORT,
+                                  SQLITE_DB_FILE, get_logger)
 
 logger = get_logger("main")
+logger.info(loc)
 
 
 class Manager:
@@ -26,17 +27,17 @@ class Manager:
         self,
         seed_url=None,
         max_pages=None,
-        host="localhost",
-        port=7777,
+        host=REDIS_HOST,
+        port=REDIS_PORT,
         retries: int = 3,
         debug: bool = False,
-        db_file="sqlite.db",
-        rdb_file="data.rdb",
+        db_file=SQLITE_DB_FILE,
+        rdb_file=RDB_FILE,
         run_id=None,
     ):
         if run_id is None:
             formatted_datetime = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-            print("Formatted datetime:", formatted_datetime)
+            logger.info("Formatted datetime:", formatted_datetime)
             self.run_id = formatted_datetime
         else:
             self.run_id = run_id
@@ -67,7 +68,7 @@ class Manager:
         return data
 
     def _init_dirs(self):
-        self.data_dir = os.path.join(os.path.dirname(__file__), "data")
+        self.data_dir = os.path.join(os.path.dirname(__file__), DATA_DIR)
         create_dir(self.data_dir, exist_ok=True)
         self.data_dir = os.path.join(self.data_dir, f"{self.run_id}")
         create_dir(self.data_dir, exist_ok=True)
@@ -84,7 +85,7 @@ class Manager:
 
     def _init_db(self):
         # Initialize databases
-        print(self.data_dir)
+        logger.info(self.data_dir)
         self.db_manager = DatabaseManager(self.url_pubsub, self.sqlite_path)
 
     def _init_cache(self):

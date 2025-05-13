@@ -10,7 +10,7 @@ from downloader import SiteDownloader
 from manager import Manager  # noqa
 from utils import parse_url  # noqa
 
-logger = get_logger("parser")
+logger = get_logger("mapper")
 
 SITEMAP_FEILDS = ["loc", "priority", "changefreq", "modified"]
 

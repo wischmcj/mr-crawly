@@ -7,7 +7,8 @@ from asyncio import Queue
 from parser import Parser
 
 import redis
-from config.configuration import get_logger
+from config.configuration import (RDB_FILE, REDIS_HOST, REDIS_PORT,
+                                  SQLITE_DB_FILE, get_logger)
 # from manager import Manager
 from downloader import SiteDownloader
 from manager import Manager
@@ -15,9 +16,11 @@ from mapper import SiteMapper
 
 logger = get_logger("crawler")
 
-rdb = redis.Redis(host="localhost", port=7777)
+rdb = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
 
-manager = Manager(host="localhost", port=7777, db_file="sqlite.db", rdb_file="data.rdb")
+manager = Manager(
+    host=REDIS_HOST, port=REDIS_PORT, db_file=SQLITE_DB_FILE, rdb_file=RDB_FILE
+)
 
 
 async def prime_queue(seed_url: str):
@@ -35,7 +38,7 @@ async def process_url_while_true(
 ):
     parse_queue = Queue(20)
     await prime_queue(url)
-    print(f"Added {url} to visit tracker")
+    logger.info(f"Primed queue for seed url {url}")
     download_producer = asyncio.create_task(
         download_url_while_true(parse_queue, retries, write_to_db, check_every)
     )
@@ -67,7 +70,7 @@ async def download_url_while_true(
                 running = False
             for _ in range(retries):
                 if url is not None:
-                    print(f"Download request received for {url} ...")
+                    logger.debug(f"Download request received for {url} ...")
                     content = None
                     try:
                         content, status = downloader.get_page_elements(url)
@@ -84,7 +87,7 @@ async def download_url_while_true(
                         await asyncio.wait_for(
                             parse_queue.put((url, content)), timeout=1
                         )
-                    print("try loop exit")
+                    logger.debug("try loop exit")
                 else:
                     empty_count += 1
             await asyncio.sleep(check_every)
@@ -114,13 +117,12 @@ async def parse_while_true(
         if not parse_queue.empty():
             empty_count = 0
             url, content = await asyncio.wait_for(parse_queue.get(), timeout=1)
-            print(f"Content received for {url}, parsing...")
+            logger.info(f"Content received for {url}, parsing...")
             link_list = parser.parse(url, content)
             for link in link_list:
-                logger.info(f"Found {len(link_list)} links in {url}")
                 links.append(link)
             if len(links) == 0:
-                print(f"No links found for {url}")
+                logger.warning(f"No links found for {url}")
             parse_queue.task_done()
         else:
             empty_count += 1
@@ -134,8 +136,8 @@ async def parse_while_true(
 
 def crawl(
     seed_url: str,
-    max_pages: int,
-    retries: int,
+    max_pages: int = 100,
+    retries: int = 3,
     write_to_db: bool = True,
     check_every: float = 0.5,
 ):
@@ -145,7 +147,7 @@ def crawl(
     manager.set_max_pages(max_pages)
     manager.retries = retries
     manager.db_manager.start_run(manager.run_id, seed_url, max_pages)
-    print(f"Starting crawl for {seed_url}")
+    logger.info(f"Starting crawl for {seed_url}")
     links = asyncio.run(
         process_url_while_true(
             url=seed_url,
