@@ -24,7 +24,7 @@ class BaseListener:
 
     def start(self):
         """Start the message handling loop in a separate thread"""
-        self.thread = threading.Thread(target=self.handle_messages)
+        self.thread = threading.Thread(target=self.handle_message)
         self.thread.daemon = True
         self.thread.start()
 
@@ -36,4 +36,9 @@ class BaseListener:
     @abstractmethod
     def handle_message(self, message):
         """Handle a message"""
+        pass
+
+    @abstractmethod
+    def flush(self):
+        """Perform setup actions"""
         pass

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
@@ -48,18 +49,28 @@ class URLData:
 class CrawlTracker:
     """Track the status of a URL"""
 
-    def __init__(self, redis_conn: redis.Redis, seed_url: str, run_id: str):
-        self.rdb = redis_conn
-        self.seed_url = seed_url
-        self.run_id = run_id
+    def __init__(self, manager, url_pubsub):
+        self.manager = manager
+        self.rdb = manager.rdb
+        self.seed_url = manager.seed_url
+        self.run_id = manager.run_id
         self.urls = defaultdict(dict)
+        self.completed_pages = 0
+        self.max_pages = manager.max_pages
+        self.visited_urls = set()
 
-    def update_links(self, parent_url: str, links: list[str]) -> None:
+    def store_linked_urls(self, parent_url: str, links: list[str]) -> None:
         """Update the parent URL for a URL"""
-        for url in links:
-            url_data = self.urls.get(url, {})
-            url_data["parent_url"] = parent_url
-            self.urls[url] = url_data
+        self.urls[parent_url]["linked_urls"] = links
+
+    def close_url(self, url_data: str) -> None:
+        """Close a URL"""
+        self.completed_pages += 1
+        if self.completed_pages >= self.max_pages:
+            self.rdb.publish("db", "exit")
+        else:
+            self.rdb.publish("db", json.dumps(url_data))
+        return url_data
 
     def update_status(self, url: str, status: str, status_code: int = None) -> None:
         """
@@ -87,13 +98,36 @@ class CrawlTracker:
             url_data["crawl_status"] = "parse"
         elif status == "parsed":
             url_data["crawl_status"] = "Finished"
-            return url_data
+            self.close_url(url_data)
         elif status == "error" or status == "disallowed":
             url_data["crawl_status"] = status
-            return url_data
+            self.close_url(url_data)
         url_data["crawl_status"] = status
         self.urls[url] = url_data
         return url_data
+
+    def close_queue(self) -> None:
+        """Close the queue"""
+        self.sent_exit = True
+
+    def get_page_to_visit(self) -> list[str]:
+        """Get all frontier seeds for a URL"""
+        if self.completed_pages >= self.max_pages:
+            logger.warning("Max pages reached, closing queue")
+            return None
+        url = self.rdb.lpop("to_visit")
+        if url is not None:
+            url = url.decode("utf-8")
+        return url or ""
+
+    def add_page_to_visit(self, url: str) -> None:
+        """Add a frontier URL to the visit queue"""
+        if url not in self.visited_urls:
+            self.rdb.lpush("to_visit", url)
+
+    def add_page_visited(self, url: str) -> None:
+        """Add a visited seed for a URL"""
+        self.visited_urls.add(url)
 
 
 class URLCache:
@@ -127,44 +161,3 @@ class URLCache:
         if bstatus:
             status = bstatus.decode("utf-8")
         return content, status
-
-
-class VisitTracker:
-    def __init__(self, redis_conn: redis.Redis, max_pages: int):
-        self.rdb = redis_conn
-        self.visited_urls = set()
-        self.page_count = 0
-        self.max_pages = max_pages
-        # self.to_visit = set()
-
-    def get_page_to_visit(self) -> list[str]:
-        """Get all frontier seeds for a URL"""
-        if self.page_count > self.max_pages:
-            return None
-        url = self.rdb.lpop("to_visit")
-        if url is not None:
-            url = url.decode("utf-8")
-        logger.debug(f"Popped {url} from to_visit")
-        self.page_count += 1
-        return url
-
-    def add_page_to_visit(self, url: str) -> None:
-        """Add a frontier URL to the visit queue"""
-        # self.to_visit.add(url)
-        if self.page_count > self.max_pages:
-            logger.warning(f"Max pages reached: {self.page_count}")
-            return None
-        else:
-            if url not in self.visited_urls:
-                self.rdb.lpush("to_visit", url)
-            logger.info(f"Added {url} to to_visit")
-
-    def add_page_visited(self, url: str) -> None:
-        """Add a visited seed for a URL"""
-        self.visited_urls.add(url)
-        self.rdb.sadd("visited", url)
-        logger.info(f"Added {url} to visited")
-
-    def get_pages_visited(self) -> list[str]:
-        """Get all frontier seeds for a URL"""
-        return self.rdb.smembers("visited")

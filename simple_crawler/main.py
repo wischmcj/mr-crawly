@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import time
 from asyncio import Queue
 from parser import Parser
 
@@ -26,7 +27,7 @@ async def prime_queue(seed_url: str):
         sitemap_url, sitemap_indexes, sitemap_details = mapper.get_sitemap()
     except Exception as e:
         logger.error(f"Error getting sitemap for {seed_url}: {e}")
-        manager.visit_tracker.add_page_to_visit(seed_url)
+        manager.crawl_tracker.add_page_to_visit(seed_url)
 
 
 async def process_url_while_true(
@@ -54,12 +55,16 @@ async def download_url_while_true(
     downloader = SiteDownloader(manager, write_to_db)
     empty_count = 0
     max_empty_count = 25
+    running = True
     # Continue querying cache for new items
     # Stop when 25 cycle have passed without finding any new items
-    while True and empty_count <= max_empty_count:
+    while running and empty_count <= max_empty_count:
         try:
             # Check redis list for new pages needing to be visited
-            url = manager.visit_tracker.get_page_to_visit()
+            url = manager.crawl_tracker.get_page_to_visit()
+            if url == 0:
+                logger.info("No more pages to visit, closing queue")
+                running = False
             for _ in range(retries):
                 if url is not None:
                     print(f"Download request received for {url} ...")
@@ -74,7 +79,7 @@ async def download_url_while_true(
                             )
                             check_every = check_every * 1.5
                             await asyncio.sleep(10)
-                    manager.visit_tracker.add_page_visited(url)
+                    manager.crawl_tracker.add_page_visited(url)
                     if content is not None:
                         await asyncio.wait_for(
                             parse_queue.put((url, content)), timeout=1
@@ -86,9 +91,8 @@ async def download_url_while_true(
         except asyncio.TimeoutError:
             logger.info("Timeout error")
             break
-    if empty_count >= max_empty_count:
-        logger.info(f"Queue empty for {max_empty_count} consecutive checks")
-    logger.info(f"Completed processing {url}")
+    logger.info(f"Completed processing {url}, exiting...")
+    await asyncio.sleep(5)
     return
 
 
@@ -150,14 +154,14 @@ def crawl(
             check_every=check_every,
         )
     )
-    breakpoint()
+    time.sleep(3)
     return links
 
 
 if __name__ == "__main__":
     crawl(
         seed_url="https://www.overstory.com",
-        max_pages=200,
+        max_pages=10,
         retries=1,
         write_to_db=True,
         check_every=0.2,

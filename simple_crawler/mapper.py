@@ -20,7 +20,6 @@ class SiteMapper:
         self.manager = manager
         self.seed_url = seed_url
         self.cache = manager.cache
-        self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
         self.crawl_tracker = manager.crawl_tracker
         self.downloader = SiteDownloader(manager, write_to_db)
@@ -97,7 +96,7 @@ class SiteMapper:
                 self.sitemap_indexes[index].append(url)
                 self.sitemap_details.append(dict(details))
                 if details.get("status") == "Success":
-                    self.visit_tracker.add_page_to_visit(details.get("loc"))
+                    self.manager.crawl_tracker.add_page_to_visit(details.get("loc"))
                 links = [details.get("loc")]
 
         except Exception as e:

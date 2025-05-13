@@ -14,7 +14,6 @@ class SiteDownloader:
     def __init__(self, manager: Manager, write_to_db: bool = True):
         self.manager = manager
         self.cache = manager.cache
-        self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
         self.crawl_tracker = manager.crawl_tracker
         self.write_to_db = write_to_db
@@ -48,13 +47,11 @@ class SiteDownloader:
 
     def on_success(self, url: str, content: str, status_code: int):
         self.cache.update_content(url, content, status_code)
-        self.crawl_tracker.update_status(url, "downloaded", status_code)
+        _ = self.crawl_tracker.update_status(url, "downloaded", status_code)
 
     def on_failure(self, url: str, crawl_status: str, content: str, status_code: int):
         self.cache.update_content(url, content, status_code)
-        data = self.crawl_tracker.update_status(url, crawl_status, status_code)
-        if self.write_to_db:
-            self.db_manager.store_url(data)
+        _ = self.crawl_tracker.update_status(url, crawl_status, status_code)
 
     def get_page_elements(self, url: str, cache_results: bool = True) -> set[str]:
         """Get the page elements from a webpage"""

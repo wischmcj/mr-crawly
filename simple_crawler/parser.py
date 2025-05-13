@@ -18,7 +18,6 @@ class Parser:
         self.url = url
         self.manager = manager
         self.cache = manager.cache
-        self.visit_tracker = manager.visit_tracker
         self.db_manager = manager.db_manager
         self.crawl_tracker = manager.crawl_tracker
         self.write_to_db = write_to_db
@@ -41,30 +40,26 @@ class Parser:
             # Only include URLs from the same domain
             if urlparse(absolute_url).netloc == urlparse(url).netloc:
                 links.add(absolute_url)
-                self.visit_tracker.add_page_to_visit(absolute_url)
+                self.crawl_tracker.add_page_to_visit(absolute_url)
         return links
 
     def on_success(self, url, links):
         """Callback for when a job succeeds"""
-        data = self.crawl_tracker.update_status(url, "parsed")
-        self.crawl_tracker.update_links(url, links)
-        if self.write_to_db:
-            self.db_manager.store_url(data)
+        self.crawl_tracker.store_linked_urls(url, links)
+        _ = self.crawl_tracker.update_status(url, "parsed")
 
     def on_failure(self, url):
         """Callback for when a job fails"""
-        data = self.crawl_tracker.update_status(url, "error")
-        if self.write_to_db:
-            self.db_manager.store_url(data)
+        _ = self.crawl_tracker.update_status(url, "error")
 
     # Crawling Logic
     def parse(self, url, content):
         """Main crawling method"""
         links = set()
-        logger.info(f"Parsing {url}")
+        logger.debug(f"Parsing {url}")
         try:
             links = self.get_links_from_content(url, content)
-            logger.error(f"Found {len(links)} links in {url}")
+            logger.info(f"Found {len(links)} links in {url}")
             self.on_success(url, list(links))
         except Exception as e:
             logger.error(f"Error parsing {url}: {e}")
