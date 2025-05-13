@@ -15,7 +15,7 @@ loc = os.path.dirname(__file__)
 print(loc)
 sys.path.append(loc)
 
-from cache import CrawlTracker, URLCache, VisitTracker  # noqa
+from cache import CrawlTracker, URLCache  # noqa
 from config.configuration import get_logger  # noqa
 
 logger = get_logger("main")
@@ -49,6 +49,7 @@ class Manager:
         self.rdb_file = rdb_file
         self.rdb = redis.Redis(host=host, port=port, decode_responses=False)
         self._init_dirs()
+        self._init_pubsub()
         self._init_db()
         self._init_cache()
 
@@ -73,24 +74,28 @@ class Manager:
         self.rdb_path = os.path.join(self.data_dir, self.rdb_file)
         self.sqlite_path = os.path.join(self.data_dir, self.db_file)
 
+    def _init_pubsub(self):
+        url_channel = "db"
+        # Initialize databases
+        url_pubsub = self.rdb.pubsub()
+        url_pubsub.subscribe(url_channel)
+        self.url_pubsub = url_pubsub
+        return url_pubsub
+
     def _init_db(self):
         # Initialize databases
         print(self.data_dir)
-        self.db_manager = DatabaseManager(self.sqlite_path)
+        self.db_manager = DatabaseManager(self.url_pubsub, self.sqlite_path)
 
     def _init_cache(self):
         self.cache = URLCache(self.rdb)
-        self.crawl_tracker = CrawlTracker(
-            self.rdb, seed_url=self.seed_url, run_id=self.run_id
-        )
-        self.visit_tracker = VisitTracker(self.rdb, max_pages=self.max_pages)
+        self.crawl_tracker = CrawlTracker(manager=self, url_pubsub=self.url_pubsub)
 
     def shutdown(self):
         """Shutdown the manager"""
-        self.db_manager.complete_run(self.run_id)
-        self.db_manager.flush_urls()
-        self.rdb.flushdb()
-        self.rdb.close()
+        logger.info("Shutting down manager")
+        self.db_manager.shutdown()
+        self.url_pubsub.close()
 
     def set_seed_url(self, seed_url: str):
         self.seed_url = seed_url
@@ -98,11 +103,7 @@ class Manager:
 
     def set_max_pages(self, max_pages: int):
         self.max_pages = max_pages
-        self.visit_tracker.max_pages = max_pages
-
-    def _flush_db(self):
-        """Flush the database"""
-        self.rdb.flushdb()
+        self.crawl_tracker.max_pages = max_pages
 
     def save_cache(self):
         logger.info("Saving cache")

@@ -1,33 +1,97 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
+from threading import Event
 
 from config.configuration import get_logger
+from helper_classes import BaseListener
 
 logger = get_logger("data")
+exit_event = Event()
+
+
+class UrlBulkWriter(BaseListener):
+    def __init__(self, pubsub, db_file, batch_size=5):
+        """Initialize with a Redis pubsub object"""
+        self.conn = sqlite3.connect(db_file, check_same_thread=False)
+        self.pubsub = pubsub
+        self.batch_size = batch_size
+        self.urls_to_write = []
+        self.url_db = UrlTable(self.conn)
+        self.url_db.create_table()
+        self.running: bool = True
+
+    def store_url(self, url_data: dict) -> None:
+        """Store URL data in database"""
+        self.urls_to_write.append(url_data)
+        logger.info(f"Currently {len(self.urls_to_write)} urls to write")
+        if len(self.urls_to_write) > self.batch_size:
+            self.url_db.store_urls(self.urls_to_write)
+            self.urls_to_write = []
+
+    def get_urls_for_seed_url(self, seed_url: str) -> list[dict]:
+        """Get all URL records for a given seed URL"""
+        return self.url_db.get_urls_for_seed_url(seed_url)
+
+    def get_urls_for_run(self, run_id: str) -> list[dict]:
+        """Get all URL records for a given run ID"""
+        return self.url_db.get_urls_for_run(run_id)
+
+    def flush_urls(self) -> None:
+        """Flush the URLs to the database"""
+        logger.info("Flushing URLs to database")
+        self.url_db.store_urls(self.urls_to_write)
+        self.urls_to_write = []
+        logger.info("Closing connection to database")
+
+    def handle_message(self):
+        while self.running:
+            for message in self.pubsub.listen():
+                logger.info(f"Received message: {message}")
+                if message["type"] == "message":
+                    if message["data"] == b"exit":
+                        self.running = False
+                        break
+                    else:
+                        url_data = json.loads(message.get("data", ""))
+                        self.store_url(url_data)
+        self.flush_urls()
+        exit_event.set()
 
 
 class DatabaseManager:
-    def __init__(self, db_file="data/db.sqlite", logger=None):
-        self.conn = sqlite3.connect(db_file)
+    def __init__(self, url_pubsub, db_file="data/db.sqlite"):
+        self.conn = sqlite3.connect(db_file, check_same_thread=False)
         self.db_file = db_file
+        self.url_pubsub = url_pubsub
         self._init_db()
-        self.channel = "db"
         self.urls_to_write = []
         self.write_every = 10
 
     def _init_db(self):
         # Initialize databases
         self.run_db = RunTable(self.conn)
-        self.url_db = UrlTable(self.conn)
         self.sitemap_table = SitemapTable(self.conn)
         self.create_tables()
+        self.listeners = []
+        self.add_listener(self.url_pubsub, UrlBulkWriter, (self.db_file,))
+
+    def shutdown(self):
+        """Shutdown the database manager"""
+        logger.info("Shutting down database manager")
+        self.conn.close()
+
+    def add_listener(self, pubsub, listener_cls, args=()):
+        print(f"Subscribed to {pubsub}. Waiting for messages...")
+        handler = listener_cls(pubsub, *args)
+        handler.start()
+        self.listeners.append(handler)
 
     def create_tables(self) -> None:
         """Create all database tables"""
-        self.url_db.create_table()
         self.sitemap_table.create_table()
         self.run_db.create_table()
 
@@ -39,19 +103,6 @@ class DatabaseManager:
         """Complete a crawl run"""
         self.run_db.complete_run(run_id)
 
-    def store_url(self, url_data: dict) -> None:
-        """Store URL data in database"""
-        self.urls_to_write.append(url_data)
-        logger.info(f"Currently {len(self.urls_to_write)} urls to write")
-        if len(self.urls_to_write) > self.write_every:
-            self.url_db.store_urls(self.urls_to_write)
-            self.urls_to_write = []
-
-    def flush_urls(self) -> None:
-        """Flush the URLs to the database"""
-        self.url_db.store_urls(self.urls_to_write)
-        self.urls_to_write = []
-
     def store_links(
         self, seed_url: str, parent_url: str, linked_urls: list[str]
     ) -> None:
@@ -61,14 +112,6 @@ class DatabaseManager:
     def store_sitemap(self, url: str, sitemap_data: dict) -> None:
         """Store sitemap data"""
         self.sitemap_table.store_sitemap_data(url, sitemap_data)
-
-    def get_urls_for_seed_url(self, seed_url: str) -> list[dict]:
-        """Get all URL records for a given seed URL"""
-        return self.url_db.get_urls_for_seed_url(seed_url)
-
-    def get_urls_for_run(self, run_id: str) -> list[dict]:
-        """Get all URL records for a given run ID"""
-        return self.url_db.get_urls_for_run(run_id)
 
     def get_sitemaps_for_seed_url(self, seed_url: str) -> list[dict]:
         """Get all sitemap records for a given seed URL"""
@@ -164,6 +207,7 @@ class RunTable(BaseTable):
                               VALUES (?, ?, datetime('now'), ?);""",
             (run_id, seed_url, max_pages),
         )
+        self.conn.commit()
         return self.cursor.lastrowid
 
     def complete_run(self, run_id: str):
@@ -175,6 +219,7 @@ class RunTable(BaseTable):
                             WHERE run_id = ?;""",
             (run_id,),
         )
+        self.conn.commit()
         return res
 
 
@@ -190,6 +235,7 @@ class UrlTable(BaseTable):
             "req_status",
             "crawl_status",
             "run_id",
+            "linked_urls",
         ]
         self.types = [
             "INTEGER",
@@ -199,6 +245,7 @@ class UrlTable(BaseTable):
             "TEXT",
             "TEXT",
             "TEXT",
+            "BLOB",
         ]
         self.primary_key = "id"
         self.unique_keys = ["id"]
@@ -206,7 +253,7 @@ class UrlTable(BaseTable):
     def get_urls_for_run(self, run_id: str) -> list[dict]:
         """Get all URL records for a given run ID"""
         res = self.execute_query(
-            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id
+            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id, linked_urls
                FROM urls
                WHERE run_id = ?""",
             (run_id,),
@@ -220,7 +267,7 @@ class UrlTable(BaseTable):
     def get_urls_for_seed_url(self, seed_url: str) -> list[dict]:
         """Get all URL records for a given seed URL"""
         res = self.execute_query(
-            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id
+            """SELECT id, seed_url, url, content, req_status, crawl_status, run_id, linked_urls
                FROM urls
                WHERE seed_url = ?""",
             (seed_url,),
@@ -233,7 +280,6 @@ class UrlTable(BaseTable):
 
     def store_urls(self, url_data: list[dict]):
         """Store URL and its HTML content"""
-        print("storing urls", url_data)
         to_write = []
         if len(url_data) > 0:
             for row in url_data:
@@ -243,10 +289,19 @@ class UrlTable(BaseTable):
                 crawl_status = row.get("crawl_status", "")
                 seed_url = row.get("seed_url", "")
                 run_id = row.get("run_id", "")
+                linked_urls = json.dumps(row.get("linked_urls", []))
                 to_write.append(
-                    [seed_url, url, content, req_status, crawl_status, run_id]
+                    [
+                        seed_url,
+                        url,
+                        content,
+                        req_status,
+                        crawl_status,
+                        run_id,
+                        linked_urls,
+                    ]
                 )
-            insert_query = "INSERT INTO urls (seed_url, url, content, req_status, crawl_status, run_id) VALUES "
+            insert_query = "INSERT INTO urls (seed_url, url, content, req_status, crawl_status, run_id, linked_urls) VALUES "
             val_lists = [
                 "','".join([str(x) if x else "" for x in row]) for row in to_write
             ]
