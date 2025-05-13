@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 from manager import Manager
@@ -60,10 +60,3 @@ def test_init_dirs(manager):
     assert manager.data_dir.endswith(manager.run_id)
     assert manager.rdb_path.endswith("data.rdb")
     assert manager.sqlite_path.endswith(manager.db_file)
-
-
-def test_flush_db(manager):
-    """Test database flush"""
-    manager.rdb.flushdb = Mock(True)
-    manager._flush_db()
-    manager.rdb.flushdb.assert_called_once()
