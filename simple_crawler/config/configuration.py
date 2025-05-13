@@ -5,7 +5,6 @@ import logging.config
 import os
 import sys
 
-import toml
 import yaml
 
 cwd = os.getcwd()
@@ -13,8 +12,20 @@ loc = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(loc)
 # sys.path.append(os.path.dirname(cwd))
 
-config_file = os.environ.get("MRCRAWLYCONFIG", f"{loc}/config/config.toml")
-log_config = os.environ.get("MRCRAWLY_LOG_CONFIG", f"{loc}/config/logging_config.yml")
+log_config = os.environ.get(
+    "SIMPLE_CRAWLER_LOG_CONFIG", f"{loc}/config/logging_config.yml"
+)
+
+REDIS_PORT = os.environ.get("REDIS_PORT", 7777)
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+SQLITE_DB_FILE = os.environ.get("SQLITE_DB_FILE", "sqlite.db")
+RDB_FILE = os.environ.get("RDB_FILE", "data.rdb")
+DATA_DIR = os.environ.get("DATA_DIR", "data")
+
+MAX_PAGES = os.environ.get("MAX_PAGES", 10)
+RETRIES = os.environ.get("RETRIES", 3)
+WRITE_TO_DB = os.environ.get("WRITE_TO_DB", True)
+CHECK_EVERY = os.environ.get("CHECK_EVERY", 0.5)
 
 
 def _load_console_log():
@@ -61,23 +72,3 @@ def get_logger(logger_name: str, log_file: str = None, log_level: int = logging.
             return return_logger
     else:
         return return_logger
-
-
-def get_config(**kwargs):
-    """
-    Returns the config values set in the yaml file as a dict.
-    If kwargs are provided these will be added to the config dict,
-        overwriting any existing values with the same key.
-    """
-    try:
-        with open(config_file) as f:
-            config = toml.load(f)
-        for key, value in kwargs.items():
-            if key in config:
-                config[key] = value
-            else:
-                raise ValueError(f"Invalid configuration key: {key}")
-        return config
-    except Exception as e:
-        print(f"Error loading configuration variables from {config_file}: {e}")
-        raise e

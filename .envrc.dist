@@ -1,5 +1,15 @@
-export RUN_ENVIRONMENT=local
 export PYTHONPATH=$PYTHONPATH
 
-export MRCRAWLY_CONFIG=""
-export MRCRAWLY_LOG_CONFIG="/code/code/mr-crawly/mr_crawly/logging_config.yml"
+export SIMPLE_CRAWLER_LOG_CONFIG="/code/code/simple_crawler/simple_crawler/logging_config.yml"
+
+export REDIS_PORT=7777
+export REDIS_HOST="localhost"
+export SQLITE_DB_FILE="sqlite.db"
+export RDB_FILE="data.rdb"
+export DATA_DIR="data"
+
+
+MAX_PAGES=10
+RETRIES=3
+WRITE_TO_DB=True
+CHECK_EVERY=0.5
