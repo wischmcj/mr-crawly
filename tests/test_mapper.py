@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pytest
 from bs4 import BeautifulSoup
 from manager import Manager
 from mapper import SiteMapper
 
 
+class MockManager(Manager):
+    def _init_db(self):
+        # Initialize databases
+        print(self.data_dir)
+        self.db_manager = Mock()
+
+
 @pytest.fixture
 def manager():
-    return Manager(
+    manager = MockManager(
         host="localhost",
         port=7777,
         db_file="sqlite.db",
         rdb_file="test.rdb",
         run_id="test",
     )
+    return manager
 
 
 @pytest.fixture
@@ -50,6 +60,12 @@ def sitemap_content():
 
 
 class TestSiteMapper:
+    def setUp(self, manager):
+        self.mock_manager = manager
+        self.mock_manager.cache = Mock()
+        self.mock_manager.crawl_tracker = Mock()
+        self.mock_manager.db_manager = Mock()
+
     def test_init(self, site_mapper):
         assert site_mapper.seed_url == "https://example.com"
         assert isinstance(site_mapper.sitemap_indexes, dict)
