@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from bs4 import BeautifulSoup
 from manager import Manager
-from mapper import SiteMapper
+from site_mapper import SiteMapper
 
 
 class MockManager(Manager):

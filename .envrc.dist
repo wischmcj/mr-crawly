@@ -1,6 +1,6 @@
 export PYTHONPATH=$PYTHONPATH
 
-export SIMPLE_CRAWLER_LOG_CONFIG="/code/code/simple_crawler/simple_crawler/logging_config.yml"
+export SIMPLE_CRAWLER_LOG_CONFIG="/code/code/mr-crawly/mr_crawly/logging_config.yml"
 
 export REDIS_PORT=7777
 export REDIS_HOST="localhost"

@@ -9,10 +9,11 @@ from parser import Parser
 import redis
 from config.configuration import (RDB_FILE, REDIS_HOST, REDIS_PORT,
                                   SQLITE_DB_FILE, get_logger)
-# from manager import Manager
-from downloader import SiteDownloader
 from manager import Manager
-from mapper import SiteMapper
+
+# from manager import Manager
+from mr_crawly.site_downloader import SiteDownloader
+from mr_crawly.site_mapper import SiteMapper
 
 logger = get_logger("crawler")
 

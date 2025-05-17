@@ -6,9 +6,10 @@ from collections import defaultdict
 import bs4  # noqa
 from bs4 import BeautifulSoup  # noqa
 from config.configuration import get_logger
-from downloader import SiteDownloader
 from manager import Manager  # noqa
 from utils import parse_url  # noqa
+
+from mr_crawly.site_downloader import SiteDownloader
 
 logger = get_logger("mapper")
 

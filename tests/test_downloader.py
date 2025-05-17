@@ -3,8 +3,7 @@ from __future__ import annotations
 from unittest.mock import Mock, patch
 
 import pytest
-
-from simple_crawler.downloader import SiteDownloader
+from simple_crawler.site_downloader import SiteDownloader
 
 
 @pytest.fixture
