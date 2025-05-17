@@ -14,9 +14,8 @@ loc = os.path.dirname(__file__)
 sys.path.append(loc)
 
 from cache import CrawlTracker, URLCache  # noqa
-from config.configuration import REDIS_HOST  # noqa
-from config.configuration import (DATA_DIR, RDB_FILE, REDIS_PORT,
-                                  SQLITE_DB_FILE, get_logger)
+from config.configuration import (DATA_DIR, RDB_FILE, REDIS_HOST,  # noqa
+                                  REDIS_PORT, SQLITE_DB_FILE, get_logger)
 
 logger = get_logger("main")
 logger.info(loc)
