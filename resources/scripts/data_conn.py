@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import sys
 
-from config.configuration import get_logger
+loc = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(f"{loc}/simple_crawler")
+from config.configuration import get_logger  # noqa
 
 logger = get_logger("data_conn")
 

@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-from diagrams import Cluster, Diagram
-from diagrams.gcp.analytics import BigQuery, Dataflow, PubSub
-from diagrams.gcp.compute import AppEngine, Functions
-from diagrams.gcp.database import BigTable
-from diagrams.gcp.iot import IotCore
-from diagrams.gcp.storage import GCS
-
 # Groups
 # Manager
 # DB Manager
@@ -18,29 +11,6 @@ from diagrams.gcp.storage import GCS
 # Sitemap Checker
 # Downloader
 # Parser
-
-with Diagram("Message Collecting", show=False):
-    pubsub = PubSub("pubsub")
-
-    with Cluster("Source of Data"):
-        [IotCore("core1"), IotCore("core2"), IotCore("core3")] >> pubsub
-
-    with Cluster("Targets"):
-        with Cluster("Data Flow"):
-            flow = Dataflow("data flow")
-
-        with Cluster("Data Lake"):
-            flow >> [BigQuery("bq"), GCS("storage")]
-
-        with Cluster("Event Driven"):
-            with Cluster("Processing"):
-                flow >> AppEngine("engine") >> BigTable("bigtable")
-
-            with Cluster("Serverless"):
-                flow >> Functions("func") >> AppEngine("appengine")
-
-    pubsub >> flow
-
 
 # # Create a diagram with a title and direction
 # with Diagram("Crawler Process Flow", show=True, direction="LR"):
