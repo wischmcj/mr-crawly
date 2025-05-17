@@ -14,4 +14,4 @@ cursor = conn.cursor()
 
 if __name__ == "__main__":
     data = cursor.execute("SELECT * FROM urls").fetchall()
-    breakpoint()
+    # breakpoint()
