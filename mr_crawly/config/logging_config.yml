@@ -24,8 +24,13 @@ handlers:
 
 loggers:
 
-    crawler:
-        level: DEBUG
+    main:
+        level: INFO
+        handlers: [console]
+        propagate: no
+
+    data:
+        level: INFO
         handlers: [console]
         propagate: no
 
@@ -34,7 +39,7 @@ loggers:
         handlers: [console]
         propagate: yes
 
-    scheduler:
+    downloader:
         level: INFO
         handlers: [console]
         propagate: yes
@@ -42,4 +47,5 @@ loggers:
 root:
     # By default, we display warning level logs from any library in the console
     # to match Python's default behavior while formatting logs nicely
-    level: WARNING
+    level: INFO
+    # handlers: [console]

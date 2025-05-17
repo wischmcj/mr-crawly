@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
-import time
 from urllib.parse import urlparse
+
+from config.configuration import get_logger
+
+logger = get_logger(__name__)
 
 
 def parse_url(url: str):
@@ -11,20 +14,16 @@ def parse_url(url: str):
     return parsed_url.scheme, parsed_url.netloc, parsed_url.path
 
 
-def create_dir(dir_name):
+def create_dir(dir_name, exist_ok=False):
     # Method 1: Using os.mkdir() to create a single directory
-    dir_name = "my_new_directory"
     try:
         os.mkdir(dir_name)
-        print(f"Directory '{dir_name}' created successfully.")
+        logger.info(f"Directory '{dir_name}' created successfully.")
     except FileExistsError:
-        print(f"Directory '{dir_name}' already exists.")
+        if exist_ok:
+            logger.info(f"Directory '{dir_name}' already exists.")
+        else:
+            raise FileExistsError(f"Directory '{dir_name}' already exists.")
     except PermissionError as err:
-        print(f"Permission denied: Unable to create '{dir_name}'.")
+        logger.info(f"Permission denied: Unable to create '{dir_name}'.")
         raise err
-
-
-def add(a, b):
-    """Add two numbers"""
-    time.sleep(5)
-    return a + b

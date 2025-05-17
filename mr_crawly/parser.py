@@ -2,95 +2,66 @@ from __future__ import annotations
 
 from urllib.parse import urljoin, urlparse
 
-import redis
 from bs4 import BeautifulSoup
-from cache import URLCache
 from config.configuration import get_logger
+from manager import Manager
+
+# from utils import BaseWorkClass
+
+# this is essentially the same as the
+# parser, so we dont assign a specific logger
+logger = get_logger("parser")
 
 
 class Parser:
-    def __init__(
-        self,
-        seed_url: str,
-        current_url: str,
-        max_pages: int = 10,
-        host: str = "localhost",
-        port: int = 7777,
-    ):
-        self.seed_url = seed_url
-        self.current_url = current_url
-        self.max_pages = max_pages
-        self.visited_urls = set()
-        self.to_visit = []
-        self.logger = get_logger("crawler")
-        self.host = host
-        self.port = port
-        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
-        self.cache = URLCache(self.redis_conn)
+    def __init__(self, manager: Manager, write_to_db: bool = True, url: str = None):
+        self.url = url
+        self.manager = manager
+        self.cache = manager.cache
+        self.db_manager = manager.db_manager
+        self.crawl_tracker = manager.crawl_tracker
+        self.write_to_db = write_to_db
 
-    def request_page(self, url: str):
-        """Get the contents of the sitemap"""
-        content, req_status = self.cache.get_cached_response(url)
-        if content is None or req_status != 200:
-            return None
-        return content
-
-    def get_links(self, url: str) -> set[str]:
+    def get_links_from_content(self, url: str, content: str) -> set[str]:
         """Extract all links from a webpage"""
-        content = self.request_page(url)
-        if content is None:
-            self.logger.warning(f"Skipping {url} (no content cached)")
-            return set()
         soup = BeautifulSoup(content, "html.parser")
         links = set()
         # Looking for <a></a> tags with an href
         # Future state: look for other linkable tags like <img> or <script>
-        for anchor in soup.find_all("a", href=True):
+        tag_instances = soup.find_all("a", href=True)
+        logger.debug(f"Found {len(tag_instances)} anchor tags")
+        for tag in soup.find_all("a", href=True):
             try:
-                href = anchor["href"]
+                href = tag["href"]
                 absolute_url = urljoin(url, href)
             except Exception as e:
-                self.logger.error(f"Error parsing {url}: {e}")
+                logger.error(f"Error parsing {url}: {e}")
                 return set()
             # Only include URLs from the same domain
             if urlparse(absolute_url).netloc == urlparse(url).netloc:
                 links.add(absolute_url)
-                links.add(url)
+                self.crawl_tracker.add_page_to_visit(absolute_url)
         return links
 
-    def recurse_links(self, src_link: str) -> set[str]:
-        """Returns the links in the page to
-        Manager to be downloaded then parsed"""
-        self.to_visit.append(src_link)
-        links = self.get_links(src_link)
-        for link in links:
-            if link not in self.to_visit:
-                self.to_visit.append(link)
-        return links
+    def on_success(self, url, links):
+        """Callback for when a job succeeds"""
+        self.crawl_tracker.store_linked_urls(url, links)
+        _ = self.crawl_tracker.update_status(url, "parsed")
+
+    def on_failure(self, url):
+        """Callback for when a job fails"""
+        _ = self.crawl_tracker.update_status(url, "error")
 
     # Crawling Logic
-    def crawl(self):
+    def parse(self, url, content):
         """Main crawling method"""
-        current_url = self.current_url
-        self.logger.info(f"Crawling: {current_url}")
-        if current_url is None:
-            return None
-        if not self.can_fetch(current_url):
-            self.logger.info(f"Skipping {current_url} (not allowed by robots.txt)")
-            return None
-        self.visited_urls.add(current_url)
-
-        new_links = self.get_links(current_url)
-        return new_links
-
-
-def extract_urls(args):
-    """Extract URLs from a webpage"""
-    seed_url, curr_url = args
-    parser = Parser(seed_url, curr_url)
-    new_links = parser.crawl()
-    return new_links
-
-
-if __name__ == "__main__":
-    extract_urls("https://www.google.com")
+        links = set()
+        logger.debug(f"Parsing {url}")
+        try:
+            links = self.get_links_from_content(url, content)
+            logger.info(f"Found {len(links)} links in {url}")
+            self.on_success(url, list(links))
+        except Exception as e:
+            logger.error(f"Error parsing {url}: {e}")
+            self.on_failure(url)
+        return links

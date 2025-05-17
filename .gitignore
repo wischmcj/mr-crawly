@@ -6,7 +6,8 @@ docs/Engineering_Coding_Test.pdf
 *.pyc
 google_sitemap.json
 mr_crawly/events.py
-data/sqlite.db
-unused_code/recursive_sitemaps.py
-unused_code/events_db.py
 */sqlite.db
+*.rdb
+simple_crawler/data/*
+resources/scripts/graveyard/*
+*.db

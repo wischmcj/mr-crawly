@@ -1,58 +1,38 @@
 from __future__ import annotations
 
-import os
-import sys
+import json
 from collections import defaultdict
-
-import redis
-
-cwd = os.getcwd()
-loc = os.path.dirname(os.path.dirname(__file__))
-print(loc)
-sys.path.append(loc)
 
 import bs4  # noqa
 from bs4 import BeautifulSoup  # noqa
-from cache import URLCache  # noqa
-from config.configuration import get_logger  # noqa
-from site_downloader import SiteDownloader  # noqa
+from config.configuration import get_logger
+from manager import Manager  # noqa
 from utils import parse_url  # noqa
+
+from mr_crawly.site_downloader import SiteDownloader
+
+logger = get_logger("mapper")
+
+SITEMAP_FEILDS = ["loc", "priority", "changefreq", "modified"]
 
 
 class SiteMapper:
-    def __init__(
-        self,
-        seed_url: str,
-        parse=True,
-        host="localhost",
-        port=7777,
-    ):
+    def __init__(self, manager: Manager, seed_url: str, write_to_db: bool = True):
+        self.manager = manager
         self.seed_url = seed_url
-        self.seed_url = seed_url
-        self.to_visit: list[str] = [seed_url]
-        self.logger = get_logger("crawler")
-        self.results = dict.fromkeys(
-            [
-                "seed_url",
-                "sitemap_index",
-                "sitemap",
-                "max_pages",
-                "delay",
-                "parse",
-                "visited_urls",
-                "to_visit",
-                "robot_parser",
-            ],
-            None,
-        )
-        self.sitemap_details = []
+        self.cache = manager.cache
+        self.db_manager = manager.db_manager
+        self.crawl_tracker = manager.crawl_tracker
+        self.downloader = SiteDownloader(manager, write_to_db)
+        self.write_to_db = write_to_db
+
         self.sitemap_indexes = defaultdict(list)
-        self.frontier = []
-        self.host = host
-        self.port = port
-        self.redis_conn = redis.Redis(host=host, port=port, decode_responses=False)
-        self.cache = URLCache(self.redis_conn)
-        self.downloader = SiteDownloader(page_url=seed_url, host=host, port=port)
+        self.sitemap_details = []
+        self.sitemap_feilds = SITEMAP_FEILDS
+
+    def save_html(self, html: str, filename: str):
+        with open(filename, "w", encoding="UTF-8") as f:
+            f.write(html)
 
     def request_page(self, url: str):
         """We allow a direct connection here given the limited
@@ -60,80 +40,121 @@ class SiteMapper:
         """
         content, status = self.cache.get_cached_response(url)
         if content is None:
-            content, req_status = self.downloader.get_page_elements(url)
+            logger.debug(f"No content cached for {url}")
+            try:
+                content, req_status = self.downloader.get_page_elements(
+                    url, cache_results=False
+                )
+                logger.debug(f"Content received from downloader for {url}")
+            except Exception as e:
+                logger.debug(f"Error getting page for {url}: {e}")
+                return None
             if req_status != 200:
                 return None
         return content
 
+    def parse_sitemap_index(self, url: str, soup: BeautifulSoup):
+        """Parse the sitemap"""
+        sm_urls = [loc.text for loc in soup.find_all("loc")]
+        self.sitemap_indexes[url].extend(sm_urls)
+        logger.info(f"New Sitemap URLs: {sm_urls}")
+        return sm_urls
+
     # Link Aggregation
-    def process_sitemaps(
-        self, cur_url: str, scheme: str, index: str = None
+    def process_sitemap(
+        self, cur_url: str, soup: BeautifulSoup, index: str = None
     ) -> set[str]:
         """Extract links from sitemap.xml if available"""
-        contents = self.request_page(cur_url)
-        if contents is None:
-            return None
-        sm_soup = BeautifulSoup(contents, "lxml")
-        if sm_soup.find("sitemapindex") is not None:
-            # Page is a sitemapindex and locs represent more
-            # sitemap urls that need to be passed to the downloader
-            sm_urls = [loc.text for loc in sm_soup.find_all("loc")]
-            self.sitemap_indexes[cur_url].extend(sm_urls)
-            self.logger.info(f"New Sitemap URLs: {sm_urls}")
-            for sm_url in sm_urls:
-                details = self.process_sitemaps(sm_url, scheme, index=cur_url)
-        else:
-            # Page is a sitemap and sites represent
-            # seed urls for the crawler
-            details = defaultdict(list)
-            details["source_url"] = cur_url
-            details["index"] = index
-            url = sm_soup.find("url")
-            if url is not None:
-                try:
-                    details["loc"] = url.loc
-                    details["priority"] = url.priority
-                    details["frequency"] = url.changefreq
-                    details["modified"] = url.lastmod
-                    details["status"] = "Success"
-                except Exception as e:
-                    self.logger.error(f"Error processing sitemap: {e}")
-                    details["status"] = "Parsing Error"
-            for key, value in details.items():
-                if isinstance(value, bs4.element.Tag):
-                    details[key] = value.text
+        details = defaultdict(list)
+        details["source_url"] = cur_url
+        details["index"] = index
+        url = soup.find("url")
+        if url is not None:
+            details["status"] = "Success"
+            for field in self.sitemap_feilds:
+                details[field] = url.find(field)
 
-            # Save the sitemap details for the db
-            self.sitemap_indexes[cur_url].append(cur_url)
-            self.sitemap_details.append(dict(details))
+        for key, value in details.items():
+            if isinstance(value, bs4.element.Tag):
+                details[key] = value.text
+        return details
 
-            # Push url to the queue to be downloaded
-            self.cache.request_download(details.get("loc"))
+    def recurse_sitemap(self, url: str, contents: str, index: str = None):
+        """Recurse through the sitemap"""
+        sm_soup = BeautifulSoup(contents, features="lxml")
+        try:
+            if sm_soup.find("sitemapindex") is not None:
+                links = self.parse_sitemap_index(url, sm_soup)
+                index = url
+                for link in links:
+                    content = self.request_page(link)
+                    if content is None:
+                        logger.debug(f"No content available for {link}")
+                        continue
+                    self.recurse_sitemap(link, content, index)
+            else:
+                details = self.process_sitemap(url, sm_soup)
+                self.sitemap_indexes[index].append(url)
+                self.sitemap_details.append(dict(details))
+                if details.get("status") == "Success":
+                    self.manager.crawl_tracker.add_page_to_visit(details.get("loc"))
+                links = [details.get("loc")]
 
-    def get_sitemap_urls(self, url: str) -> str:
+        except Exception as e:
+            logger.error(f"Error parsing {url}: {e}")
+            return
+
+    def get_sitemap_urls(self, sitemap_url: str) -> str:
         """Process a sitemap index and return all URLs found"""
-        scheme, netloc, _ = parse_url(url)
-        sitemap_url = f"{scheme}://{netloc}/sitemap-index.xml"
+        logger.info(f"Getting sitemap urls for {sitemap_url}")
         contents = self.request_page(sitemap_url)
         if contents is None:
-            sitemap_url = f"{scheme}://{netloc}/sitemap.xml"
-            contents = self.request_page(sitemap_url)
-            if contents is None:
-                self.logger.warning(f"No sitemap found for {url}")
-                self.sitemap_indexes = None
-                raise Exception(f"No sitemap found for {url}")
-
-        self.process_sitemaps(sitemap_url, scheme, index="root")
-
+            logger.warning(f"No sitemap found for {sitemap_url}")
+            raise Exception(f"No sitemap found for {sitemap_url}")
+        self.recurse_sitemap(sitemap_url, contents, index="root")
         return sitemap_url, self.sitemap_indexes, self.sitemap_details
 
+    # Map site specific on end functions
+    def on_map_success(self, result):
+        """Callback for when a site mapping job succeeds"""
+        _, sitemap_indicies, sitemap_details = result
+        logger.info("Writing sitemap data to sqlite, index data to file")
 
-def map_site(url: str):
-    """Map a site"""
-    site_mapper = SiteMapper(url)
-    result = site_mapper.get_sitemap_urls(url)
-    return result
+        with open(f"{self.manager.data_dir}/sitemap_indexes.json", "w") as f:
+            json.dump(sitemap_indicies, f, default=str, indent=4)
 
+        for detail in sitemap_details:
+            self.db_manager.sitemap_table.store_sitemap_data(
+                detail, self.manager.run_id, self.manager.seed_url
+            )
 
-if __name__ == "__main__":
-    map_site("https://www.google.com")
+    def get_sitemap(self):
+        """
+        Queues the download, map_site, and parse_page jobs for the given url.
+        Returns the download, map_site, and parse_page jobs.
+        """
+        seed_url = self.manager.seed_url
+        scheme, netloc, _ = parse_url(seed_url)
+        sitemap_source_url = f"{scheme}://{netloc}/sitemap-index.xml"
+        sitemap_urls, _, _ = self.downloader.read_politeness_info(sitemap_source_url)
+        sitemaps = [x for x in sitemap_urls]
+
+        if len(sitemaps) == 0:
+            sitemap_source_url = f"{scheme}://{netloc}/sitemap-index.xml"
+        else:
+            sitemap_source_url = sitemaps[0]
+        try:
+            result = self.get_sitemap_urls(sitemap_source_url)
+        except Exception as e:
+            logger.error(
+                f"Failed to get sitemap index for {seed_url}: {e}. Trying sitemap.xml"
+            )
+            sitemap_source_url = f"{scheme}://{netloc}/sitemap.xml"
+            try:
+                result = self.get_sitemap_urls(sitemap_source_url)
+            except Exception as e:
+                logger.error(f"Sitemap at {sitemap_source_url} not found: {e}")
+                result = (None, [seed_url], {})
+                raise e
+        self.on_map_success(result)
+        return result
